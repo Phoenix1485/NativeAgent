@@ -25,7 +25,7 @@ sparkle_account=${NATIVEAGENT_SPARKLE_ACCOUNT:-dev.nativeagent.mac.updates}
 gh_cli=${NATIVEAGENT_GH:-gh}
 if ! command -v "$gh_cli" >/dev/null 2>&1 && [[ -x .build/tools/gh ]]; then gh_cli="$PWD/.build/tools/gh"; fi
 for tool in git swift python3 codesign ditto xcrun "$gh_cli"; do command -v "$tool" >/dev/null || fail "Missing tool: $tool"; done
-gh() { "$gh_cli" "$@"; }
+gh() { command "$gh_cli" "$@"; }
 clean_main() {
     [[ "$(git rev-parse --show-toplevel)" == "$project_root" ]] || fail 'Initialize this project as its own Git repository first.'
     [[ "$(git branch --show-current)" == main ]] || fail 'Switch to main before releasing.'
