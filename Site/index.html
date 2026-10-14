@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <meta name="description" content="NativeAgent is a native macOS AI workspace. Download the latest release and receive signed updates directly in the app.">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self'; script-src 'self'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'">
+  <title>NativeAgent — Your workspace, up to date.</title>
+  <link rel="icon" href="mark.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="site.css">
+  <script src="site.js" defer></script>
+</head>
+<body>
+  <a class="skip" href="#main">Skip to content</a>
+  <header class="nav wrap">
+    <a class="brand" href="./" aria-label="NativeAgent home"><img src="mark.svg" width="30" height="32" alt="">NativeAgent</a>
+    <nav aria-label="Main navigation"><a href="#updates">How updates work</a><a href="https://github.com/Phoenix1485/NativeAgent">GitHub <span aria-hidden="true">↗</span></a></nav>
+  </header>
+  <main id="main">
+    <section class="hero wrap" aria-labelledby="headline">
+      <div>
+        <p class="eyebrow">A NATIVE MACOS WORKSPACE</p>
+        <h1 id="headline">Your workspace.<br><span>Kept up to date.</span></h1>
+        <p class="lead">Conversations, project files, and AI assistance. Together in a focused, native Mac app that gets better with every release.</p>
+        <div class="actions"><a class="button" id="download" href="https://github.com/Phoenix1485/NativeAgent/releases/latest">Download for macOS <span aria-hidden="true">↓</span></a><a class="secondary" id="release" href="https://github.com/Phoenix1485/NativeAgent/releases">Release notes <span aria-hidden="true">↗</span></a></div>
+        <p class="requirements">macOS 14 or later <span aria-hidden="true">·</span> Apple Silicon &amp; Intel</p>
+        <p class="version" id="version" aria-live="polite">Latest build available on GitHub Releases</p>
+      </div>
+      <aside class="release-card" aria-labelledby="release-title">
+        <div class="card-top"><span class="status-dot" aria-hidden="true"></span> THE RELEASE PIPELINE <span aria-hidden="true">↗</span></div>
+        <h2 id="release-title">From commit<br>to your Mac.</h2>
+        <ol class="pipeline">
+          <li><span class="number">01</span><div><strong>Test. Build. Sign locally.</strong><p>Signing keys stay on the maintainer’s Mac.</p></div></li>
+          <li><span class="number">02</span><div><strong>Notarize. Publish. Verify.</strong><p>GitHub verifies the signed release before deployment.</p></div></li>
+          <li><span class="number">03</span><div><strong>Update in the app</strong><p>Verified downloads. Install on quit.</p></div></li>
+        </ol>
+        <div class="card-footer">Powered by GitHub Actions &amp; Sparkle</div>
+      </aside>
+    </section>
+    <section class="workspace wrap" aria-labelledby="workspace-title">
+      <div class="section-heading"><div><p class="eyebrow">BUILT FOR YOUR MAC</p><h2 id="workspace-title">Room to focus.</h2></div><p>Native controls. Local conversation history.<br>Your files, close at hand.</p></div>
+      <figure><img src="workspace.png" width="2560" height="1640" alt="NativeAgent’s native macOS interface, with grouped conversations in the sidebar and a chat in the main workspace." loading="lazy"><figcaption>NativeAgent interface preview with sample conversation content. Provider capabilities depend on the selected integration.</figcaption></figure>
+    </section>
+    <section class="updates wrap" id="updates" aria-labelledby="updates-title">
+      <div><p class="eyebrow">A SMALL DOWNLOAD. A SIMPLE ROUTINE.</p><h2 id="updates-title">Download once.<br>Keep moving.</h2><p>Install the update-enabled version once. After that, NativeAgent checks for signed releases in the background.</p><a class="text-link" href="appcast.xml">View the signed update feed <span aria-hidden="true">↗</span></a></div>
+      <div class="instructions">
+        <details open><summary>Installing for the first time</summary><p>Download the ZIP, extract NativeAgent, and move the app to Applications. Older builds without an updater also need this one-time installation.</p></details>
+        <details><summary>Automatic updates, on your terms</summary><p>By default, the app checks about hourly, downloads verified updates, and installs on quit. Use NativeAgent → Check for Updates for an immediate check, or change preferences in NativeAgent → Automatic Updates. An active task postpones an updater-requested restart.</p></details>
+        <details><summary>What is signed?</summary><p>Sparkle verifies both the update feed and download using NativeAgent’s Ed25519 public key. This protects update integrity; it is separate from Apple Developer ID signing and notarization.</p></details>
+      </div>
+    </section>
+    <aside class="notice wrap" aria-label="Distribution status"><strong id="signing-title">Check the release’s signing status</strong><p id="signing-detail">Signing details appear when release metadata loads. Download from the official GitHub release and never override a malware warning. Source and build instructions are available on GitHub.</p><a href="SHA256SUMS.txt">Download checksum</a></aside>
+  </main>
+  <footer class="wrap"><span>NativeAgent <span class="muted">/ Your workspace. Your choice of intelligence.</span></span><a href="https://github.com/Phoenix1485/NativeAgent/issues">Report an issue ↗</a></footer>
+</body>
+</html>

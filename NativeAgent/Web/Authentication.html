@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark light">
+  <title>{{title}} · NativeAgent</title>
+  <link rel="icon" href="data:,">
+  <style nonce="{{nonce}}">
+    :root {
+      color-scheme: dark;
+      --canvas: #19191c; --sidebar: #121214; --surface: #222225;
+      --text: #f3f3f5; --muted: #aaaab4; --line: #36363c;
+      --accent: #a79aff; --accent-surface: #2d2941; --quiet: #1c1c20;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; min-width: 280px; min-height: 100svh;
+      background: var(--canvas); color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      -webkit-font-smoothing: antialiased;
+      display: flex; flex-direction: column;
+    }
+    .topbar {
+      min-height: 84px; padding: 24px 40px; display: flex;
+      align-items: center; justify-content: space-between; gap: 20px;
+      border-bottom: 1px solid var(--line); background: var(--sidebar);
+    }
+    .brand { display: flex; align-items: center; gap: 12px; font-size: 19px; font-weight: 650; letter-spacing: -.5px; }
+    .brand svg { width: 30px; height: 32px; color: var(--accent); }
+    .local { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 12px; }
+    .local svg, .privacy svg { width: 15px; height: 15px; flex-shrink: 0; }
+    main { flex: 1; display: grid; place-items: center; padding: 64px 24px; }
+    .connection { width: 100%; max-width: 508px; animation: arrive 240ms ease-out both; }
+    .eyebrow { margin: 0 0 18px; color: var(--accent); font-size: 10px; font-weight: 650; letter-spacing: 2.6px; }
+    .card { padding: 36px; border: 1px solid var(--line); border-radius: 20px; background: var(--surface); box-shadow: 0 18px 64px #00000018; }
+    .symbol { width: 56px; height: 56px; margin-bottom: 28px; display: grid; place-items: center; border-radius: 16px; background: var(--accent-surface); color: var(--accent); }
+    .symbol svg { width: 28px; height: 28px; }
+    h1 { margin: 0 0 16px; font-size: clamp(28px, 5vw, 34px); font-weight: 620; line-height: 1.18; letter-spacing: -1.1px; text-wrap: balance; }
+    .description { margin: 0; color: var(--muted); font-size: 14px; line-height: 1.75; }
+    .handoff { margin: 28px 0; padding: 18px; border: 1px solid var(--line); border-radius: 12px; background: var(--quiet); }
+    .step { display: flex; align-items: center; gap: 12px; }
+    .step + .step { margin-top: 18px; }
+    .step-icon { width: 24px; height: 24px; display: grid; place-items: center; flex-shrink: 0; border: 1px solid var(--line); border-radius: 50%; color: var(--muted); font-size: 11px; }
+    .step-icon.active { color: var(--accent); border-color: var(--accent); background: var(--accent-surface); }
+    .step-icon svg { width: 13px; height: 13px; }
+    .step-text { min-width: 0; }
+    .step-title { margin: 0; font-size: 13px; font-weight: 550; line-height: 1.4; }
+    .step-caption { margin: 3px 0 0; font-size: 12px; color: var(--muted); line-height: 1.5; }
+    .return { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding-top: 2px; }
+    .return strong { font-size: 13px; font-weight: 550; }
+    .shortcut { display: flex; align-items: center; gap: 4px; color: var(--muted); white-space: nowrap; }
+    kbd { min-width: 26px; padding: 5px 6px; border: 1px solid var(--line); border-radius: 5px; background: var(--quiet); font: 11px -apple-system, BlinkMacSystemFont, sans-serif; text-align: center; }
+    .hint { margin: 12px 0 0; color: var(--muted); font-size: 12px; line-height: 1.6; }
+    details { margin-top: 24px; padding-top: 20px; border-top: 1px solid var(--line); }
+    summary { width: fit-content; cursor: pointer; color: var(--muted); font-size: 12px; border-radius: 3px; }
+    summary:hover { color: var(--text); }
+    summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 5px; }
+    details p { color: var(--muted); font-size: 12px; line-height: 1.7; margin: 14px 0 0; }
+    .privacy { display: flex; justify-content: center; align-items: center; gap: 8px; margin: 22px 0 0; color: var(--muted); font-size: 11px; line-height: 1.6; }
+    footer { padding: 20px 24px 28px; color: var(--muted); text-align: center; font-size: 11px; letter-spacing: .2px; }
+    @keyframes arrive { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: none; } }
+    @media (prefers-reduced-motion: reduce) { .connection { animation: none; } }
+    @media (prefers-color-scheme: light) {
+      :root { color-scheme: light; --canvas: #fafaf9; --sidebar: #f0f0ef; --surface: #fff; --text: #242429; --muted: #65656e; --line: #dedee3; --accent: #6650bf; --accent-surface: #f0ecfc; --quiet: #f8f8fa; }
+    }
+    @media (max-width: 520px) {
+      .topbar { min-height: 72px; padding: 20px 22px; }
+      .local span { display: none; }
+      main { padding: 36px 20px; }
+      .card { padding: 26px 22px; border-radius: 16px; }
+      .return { flex-wrap: wrap; gap: 10px; }
+      .privacy { align-items: flex-start; }
+      .privacy svg { margin-top: 2px; }
+    }
+  </style>
+  <script nonce="{{nonce}}">
+    // Drop authorization parameters from the visible address/history entry.
+    // No network calls, redirects, timers, cookies, or local storage.
+    try { window.history.replaceState(null, '', window.location.pathname); } catch (_) {}
+  </script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <svg viewBox="0 0 30 32" fill="none" aria-hidden="true"><path d="M15 2 28 9.5 15 17 2 9.5Z" fill="currentColor"/><path d="m2 15 13 7.5L28 15M2 21l13 7.5L28 21" stroke="currentColor" stroke-width="3" stroke-linejoin="round"/></svg>
+      <span>NativeAgent</span>
+    </div>
+    <div class="local">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><rect x="5" y="10" width="14" height="11" rx="3"/><path d="M8 10V7a4 4 0 0 1 8 0v3m-4 5v2"/></svg>
+      <span>Local connection</span>
+    </div>
+  </header>
+  <main>
+    <section class="connection" aria-labelledby="heading">
+      <p class="eyebrow">YOUR WORKSPACE</p>
+      <div class="card">
+        <div class="symbol" aria-hidden="true">{{icon}}</div>
+        <h1 id="heading">{{heading}}</h1>
+        <p class="description">{{description}}</p>
+        <div class="handoff" aria-label="Browser handoff status">
+          <div class="step">
+            <span class="step-icon active" aria-hidden="true">{{stepIcon}}</span>
+            <div class="step-text"><p class="step-title">{{stepTitle}}</p><p class="step-caption">{{stepCaption}}</p></div>
+          </div>
+          <div class="step">
+            <span class="step-icon" aria-hidden="true">2</span>
+            <div class="step-text"><p class="step-title">{{nextTitle}}</p><p class="step-caption">{{nextCaption}}</p></div>
+          </div>
+        </div>
+        <div class="return">
+          <strong>Switch to NativeAgent</strong>
+          <span class="shortcut" role="img" aria-label="Use Command Tab to switch apps"><kbd>⌘</kbd><kbd>tab</kbd></span>
+        </div>
+        <p class="hint">You can close this tab. Continue in the app.</p>
+        <details><summary>What happens next?</summary><p>{{help}}</p></details>
+      </div>
+      <p class="privacy">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="m12 3 8 3v6c0 5-8 9-8 9s-8-4-8-9V6Z"/><path d="m8.5 12 2.5 2.5 4.5-5"/></svg>
+        A local page from NativeAgent on this Mac.
+      </p>
+    </section>
+  </main>
+  <footer>Your workspace. Your choice of intelligence.</footer>
+</body>
+</html>

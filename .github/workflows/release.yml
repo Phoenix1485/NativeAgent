@@ -1,0 +1,94 @@
+name: Tests and signed release deployment
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing published release tag to redeploy (e.g. v0.5.0-build.9)'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    if: github.event_name == 'push' || github.event_name == 'pull_request'
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Test
+        run: |
+          swift test --disable-sandbox -j 4
+          python3 -m unittest discover -s Scripts/tests
+          bash -n Scripts/build-release.sh Scripts/publish-release.sh
+          swift Scripts/tests/verify-update-tests.swift
+
+  deploy:
+    if: github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')
+    runs-on: macos-15
+    timeout-minutes: 20
+    # Never cancel a deployment halfway through, and serialize feed updates.
+    concurrency:
+      group: nativeagent-pages
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Download and verify locally signed release
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$GH_REPO" == Phoenix1485/NativeAgent ]]
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-build\.[1-9][0-9]*$ ]]
+          latest=$(gh api "repos/$GH_REPO/releases/latest" --jq .tag_name)
+          [[ "$latest" == "$RELEASE_TAG" ]] || { echo 'Refusing to deploy an older release.' >&2; exit 1; }
+          commit=$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")
+          git merge-base --is-ancestor "$commit" HEAD
+          mkdir -p dist/download
+          build=${RELEASE_TAG##*-build.}
+          gh release download "$RELEASE_TAG" --repo "$GH_REPO" --dir dist/download \
+            --pattern "NativeAgent-$build.zip" --pattern appcast.xml --pattern release.json --pattern SHA256SUMS.txt
+          python3 Scripts/release-tools.py metadata dist/download/release.json "$RELEASE_TAG" "$commit"
+          key=$(/usr/libexec/PlistBuddy -c 'Print :SUPublicEDKey' NativeAgent/Resources/Info.plist)
+          swift Scripts/verify-update.swift "$key" dist/download/appcast.xml "dist/download/NativeAgent-$build.zip"
+          python3 Scripts/prepare-update-site.py --source Site --destination dist/site \
+            --archive "dist/download/NativeAgent-$build.zip" --appcast dist/download/appcast.xml \
+            --repository "$GH_REPO" --tag "$RELEASE_TAG" --commit "$commit" --notarized true
+          cmp dist/download/release.json dist/site/release.json
+          cmp dist/download/SHA256SUMS.txt dist/site/SHA256SUMS.txt
+          cmp dist/download/appcast.xml dist/site/appcast.xml
+      - name: Configure Pages
+        uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b # v5
+      - name: Upload verified site and unchanged signed feed
+        uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa # v3
+        with:
+          path: dist/site
+      - name: Recheck latest release
+        run: |
+          test "$(gh api "repos/$GH_REPO/releases/latest" --jq .tag_name)" = "$RELEASE_TAG"
+      - name: Deploy Pages
+        id: deployment
+        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4

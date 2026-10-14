@@ -1,0 +1,61 @@
+# Performance record
+
+Date: 2026-10-11
+
+## Build host
+
+- Architecture: x86_64
+- macOS SDK: 26.4
+- Xcode: 26.4.1
+- Swift: 6.3.1
+- Deployment target: macOS 14
+
+## Enforced resource bounds
+
+| Resource | Bound |
+|---|---:|
+| One provider frame | 16 MiB |
+| Raw provider input buffer | 32 MiB |
+| Concurrent pending RPCs | 64 |
+| Displayed command output | 2 MiB per entry |
+| Direct file preview | 2 MiB |
+| Git command output | 8 MiB |
+| Chat library page | 50 metadata rows per group / search / archive page |
+| Initially restored timeline | 40 entries |
+| Older-history page | 40 entries |
+| Retained timeline window | 200 entries |
+| Initial text per stored timeline entry | 8,000 characters; full text on demand |
+| Cross-provider context | 24 visible messages, 2,000 characters each |
+| Streaming UI flush interval | 100 ms; 300 ms in Low Power Mode / serious or critical thermal state |
+| Streaming database checkpoint | At most once per second during deltas, plus immediate final save |
+| Archive purge transaction | At most 100 chats per maintenance batch |
+| Retained diagnostic messages | 100 |
+| Active P0 provider processes | 1 |
+| Explicit context | 24 items / 1 MiB copied text total |
+| Task rollback checkpoint | 128 existing text files; 1 MiB each / 8 MiB total baseline |
+| Task report | 200 commands (24,000 output characters each), 200 changes/proposals, 24,000-character summary |
+| Task report list | 30 summary-only rows per page |
+| Task queue | 200 saved tasks, serial execution |
+| Global feature search | 40 results/page, 200 ms debounce, SQLite cancellation progress handler |
+| Project-content search | Separate mode; 2,000 candidate files, 1 MiB each, hidden/generated/dependency paths excluded |
+| Report event checkpoint | Coalesced to one second, immediate completion save |
+
+The provider is demand-started by an explicit account/connection/model-selection action and is never launched for offline history browsing. File/Git scans are deferred until the inspector opens, cached for the selected project, and Git refreshes once at turn completion rather than on every file-change event. Search is debounced by 250 ms. List pages use indexed keyset cursors rather than offsets. History uses indexed received-order cursors. Large-message expansion uses a native text viewport with noncontiguous layout. Library metadata pages accumulate only as requested; timeline payloads remain windowed.
+
+Optional session reconnect is user-enabled; it never resends work. Starting a native task additionally captures a bounded rollback baseline on `TaskFileService`, then compares it at completion. Global feature search uses paged SQL offsets (unlike the existing chat-library keyset cursors); full-text matching remains a scan and can become slower on very large databases. Superseded SQL scans are interrupted. New controls have no idle animation, filesystem watcher, or polling process.
+
+## Measurements
+
+- Debug offline SQLite fixture, 10,000 messages: two 40-row pages in approximately 0.6 ms.
+- Debug offline SQLite fixture, 10,000 chats: two 50-row pages and two title searches in approximately 8.7 ms.
+- These are local warm-database query measurements from the 2026-10-11 test run, not end-to-end UI latency, cold-start benchmarks, temperature measurements, or performance guarantees.
+
+`Scripts/build-release.sh` produces the optimized app bundle and reports its size. UI startup, idle CPU/RAM, provider-process RAM, and time-to-first-provider-output require launching the graphical app and, for provider totals, an authenticated turn. They are deliberately marked unmeasured until those actions are authorized and performed; no target value is reported as an observed value.
+
+Use Instruments with a Release build and record these separately:
+
+1. NativeAgent from launch until the window accepts input.
+2. NativeAgent for 60 seconds idle with one project and no connection.
+3. Provider child process after Connect but before a turn.
+4. NativeAgent and the child process during a two-minute streaming turn.
+5. Any compiler/test subprocesses separately from both.

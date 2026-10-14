@@ -1,0 +1,17 @@
+.build/
+.DS_Store
+*.xcuserstate
+xcuserdata/
+dist/
+.env
+.env.*
+!.env.example
+*.p12
+*.p8
+*.pem
+*.key
+*.keychain-db
+*.sqlite3*
+.swiftpm/
+__pycache__/
+*.pyc
