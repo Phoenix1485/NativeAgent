@@ -1,7 +1,12 @@
 import base64
 import importlib.util
+import json
+import plistlib
+import subprocess
+import sys
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 
 spec = importlib.util.spec_from_file_location("update_site", Path(__file__).parents[1] / "prepare-update-site.py")
@@ -37,6 +42,35 @@ class UpdateSiteTests(unittest.TestCase):
         for feed in ["<rss><channel/></rss>", self.feed.replace("</channel>", "<item/></channel>")]:
             with self.assertRaises(ValueError):
                 self.validate(feed)
+
+    def test_app_and_archive_staging_preserve_signed_feed_bytes(self):
+        root = Path(self.temp.name)
+        app = root / "NativeAgent.app"
+        (app / "Contents").mkdir(parents=True)
+        info = {"CFBundleIdentifier": "dev.nativeagent.mac", "CFBundleVersion": "1001.1",
+                "CFBundleShortVersionString": "0.5.0"}
+        (app / "Contents/Info.plist").write_bytes(plistlib.dumps(info))
+        with zipfile.ZipFile(self.archive, "w") as bundle:
+            bundle.write(app / "Contents/Info.plist", "NativeAgent.app/Contents/Info.plist")
+        # This test checks byte preservation only. CryptoKit tests use real signatures.
+        feed = self.feed.replace('length="7"', f'length="{self.archive.stat().st_size}"').encode() + b"\n<!-- signature fixture: preserve these exact bytes -->\n"
+        (root / "appcast.xml").write_bytes(feed)
+        site = root / "site"
+        site.mkdir()
+        (site / "index.html").write_text("<!doctype html><title>Fixture</title>")
+        for name, extra in [("local", ["--app", str(app)]), ("ci", [])]:
+            destination = root / name
+            subprocess.run([sys.executable, str(Path(module.__file__)), "--source", str(site),
+                            "--destination", str(destination), "--archive", str(self.archive),
+                            "--appcast", str(root / "appcast.xml"), "--repository", "Phoenix1485/NativeAgent",
+                            "--tag", "v0.5.0-build.1001.1", "--commit", "a" * 40, "--notarized", "true", *extra],
+                           check=True, capture_output=True)
+            self.assertEqual((destination / "appcast.xml").read_bytes(), feed)
+            data = json.loads((destination / "release.json").read_text())
+            self.assertEqual(data["commit"], "a" * 40)
+            self.assertIs(data["notarized"], True)
+        for name in ["release.json", "SHA256SUMS.txt", "appcast.xml"]:
+            self.assertEqual((root / "local" / name).read_bytes(), (root / "ci" / name).read_bytes())
 
 
 if __name__ == "__main__":
