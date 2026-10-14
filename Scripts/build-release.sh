@@ -20,8 +20,10 @@ app="$binary_root/NativeAgent.app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources" "$app/Contents/Frameworks"
 cp "$binary_root/NativeAgent" "$app/Contents/MacOS/NativeAgent"
 cp "$project_root/NativeAgent/Resources/Info.plist" "$app/Contents/Info.plist"
-ditto "$binary_root/NativeAgent_NativeAgent.bundle" "$app/Contents/Resources/NativeAgent_NativeAgent.bundle"
-ditto "$build_root/artifacts/sparkle/Sparkle/Sparkle.xcframework/macos-arm64_x86_64/Sparkle.framework" "$app/Contents/Frameworks/Sparkle.framework"
+# Do not copy Finder/resource-fork metadata into signed bundles. Explicitly
+# preserve quarantine; this is packaging hygiene, not a Gatekeeper bypass.
+ditto --norsrc --noextattr --qtn "$binary_root/NativeAgent_NativeAgent.bundle" "$app/Contents/Resources/NativeAgent_NativeAgent.bundle"
+ditto --norsrc --noextattr --qtn "$build_root/artifacts/sparkle/Sparkle/Sparkle.xcframework/macos-arm64_x86_64/Sparkle.framework" "$app/Contents/Frameworks/Sparkle.framework"
 cp "$build_root/artifacts/sparkle/Sparkle/LICENSE" "$app/Contents/Resources/Sparkle-LICENSE.txt"
 if [[ -n "${NATIVEAGENT_BUILD_NUMBER:-}" ]]; then
     [[ "$NATIVEAGENT_BUILD_NUMBER" =~ ^[0-9]+(\.[0-9]+){0,2}$ ]] || { echo "Invalid build number" >&2; exit 1; }

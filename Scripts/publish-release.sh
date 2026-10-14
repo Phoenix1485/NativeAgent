@@ -75,8 +75,11 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 # An isolated committed snapshot excludes concurrent editor changes.
 run_dir=$(mktemp -d "$PWD/dist/release-${tag}.XXXXXX")
-source_dir="$run_dir/source"
-mkdir "$source_dir"
+# Documents may be iCloud/File Provider managed, which can attach FinderInfo to
+# .app/.xpc directories and invalidate code signing. Build in the local temp area;
+# only ZIP/XML/JSON release artifacts are retained under the workspace's dist/.
+source_dir=$(mktemp -d "${TMPDIR:-/tmp}/nativeagent-release-source.XXXXXX")
+printf '%s\n' "$source_dir" > "$run_dir/source-directory.txt"
 git archive "$commit" | tar -x -C "$source_dir"
 cd "$source_dir"
 export SWIFTPM_MODULECACHE_OVERRIDE="$PWD/.build/module-cache"
@@ -97,7 +100,7 @@ codesign --verify --deep --strict "$app"
 echo 'Submitting signed app to Apple for notarization...'
 ditto -c -k --sequesterRsrc --keepParent "$app" "$run_dir/notarization.zip"
 xcrun notarytool submit "$run_dir/notarization.zip" --keychain-profile "$notary_profile" --wait --output-format json > "$run_dir/notarization.json"
-python3 "$project_root/Scripts/release-tools.py" notarization "$run_dir/notarization.json"
+python3 Scripts/release-tools.py notarization "$run_dir/notarization.json"
 xcrun stapler staple "$app"
 xcrun stapler validate "$app"
 codesign --verify --deep --strict "$app"

@@ -32,7 +32,7 @@ bash Scripts/publish-release.sh --check
 bash Scripts/publish-release.sh --dry-run
 ```
 
-`--check` performs authenticated read-only preflight (and may resolve local dependencies/fetch Git refs). `--dry-run` is the default: it performs real signing and uploads the app to **Apple for notarization**, but does not push source, create tags, publish releases, or deploy Pages. Output is kept under ignored `dist/release-TAG.XXXXXX/` for inspection. A publish run builds again; it never silently reuses a dry-run artifact.
+`--check` performs authenticated read-only preflight (and may resolve local dependencies/fetch Git refs). `--dry-run` is the default: it performs real signing and uploads the app to **Apple for notarization**, but does not push source, create tags, publish releases, or deploy Pages. Output is kept under ignored `dist/release-TAG.XXXXXX/` for inspection. The source/build snapshot is in a local temporary directory (recorded in `source-directory.txt`) to avoid iCloud/File Provider metadata interfering with signing. A publish run builds again; it never silently reuses a dry-run artifact.
 
 ## Failures and recovery
 
