@@ -94,7 +94,7 @@ unset NATIVEAGENT_BUILD_NUMBER
 bash Scripts/build-release.sh
 binary_root=$(swift build -c release --disable-sandbox --arch arm64 --arch x86_64 --show-bin-path)
 app="$binary_root/NativeAgent.app"
-lipo -verify_arch arm64 x86_64 "$app/Contents/MacOS/NativeAgent"
+lipo "$app/Contents/MacOS/NativeAgent" -verify_arch arm64 x86_64
 codesign --verify --deep --strict "$app"
 
 echo 'Submitting signed app to Apple for notarization...'

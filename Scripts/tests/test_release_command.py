@@ -42,6 +42,15 @@ class ReleaseCommandTests(unittest.TestCase):
         self.assertEqual(self.run_release("--help").returncode, 0)
         self.assertEqual(self.run_release("--invalid").returncode, 2)
 
+    def test_architecture_check_places_input_before_architecture_list(self):
+        import shlex
+        script = (self.root / "Scripts/publish-release.sh").read_text()
+        checks = [shlex.split(line) for line in script.splitlines() if line.startswith("lipo ")]
+        # -verify_arch consumes every following argument as an architecture,
+        # so a trailing input path would be rejected as an unknown architecture.
+        self.assertEqual(checks, [["lipo", "$app/Contents/MacOS/NativeAgent",
+                                   "-verify_arch", "arm64", "x86_64"]])
+
     def test_cloud_signing_is_refused(self):
         result = self.run_release("--publish", cloud=True)
         self.assertNotEqual(result.returncode, 0)
