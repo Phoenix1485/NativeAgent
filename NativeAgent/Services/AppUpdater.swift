@@ -40,6 +40,15 @@ final class AppUpdater: NSObject, ObservableObject, SPUUpdaterDelegate {
             Task { @MainActor in self?.resumeDeferredInstallIfIdle() }
         }
         controller.startUpdater()
+        // Sparkle recommends additional checks only immediately after starting its scheduler.
+        // Do not add a second polling timer or interfere with wake/scheduled checks.
+        if Self.shouldCheckAtLaunch(enabled: automaticallyChecks, lastCheck: controller.updater.lastUpdateCheckDate) {
+            controller.updater.checkForUpdatesInBackground()
+        }
+    }
+
+    static func shouldCheckAtLaunch(enabled: Bool, lastCheck: Date?, now: Date = .now) -> Bool {
+        enabled && (lastCheck.map { now.timeIntervalSince($0) >= 900 } ?? true)
     }
 
     func checkForUpdates() { controller?.checkForUpdates(nil) }
@@ -47,6 +56,7 @@ final class AppUpdater: NSObject, ObservableObject, SPUUpdaterDelegate {
     var installationMustWait: Bool {
         guard let model else { return false }
         return model.isWorking || model.accountActionInProgress || model.features.activeTask != nil || model.features.finishingTask
+            || model.features.editorHasChanges || model.features.fileSaveInProgress || model.features.importingFiles || !model.features.mcp.connecting.isEmpty
     }
 
     func updater(_ updater: SPUUpdater, shouldPostponeRelaunchForUpdate item: SUAppcastItem,

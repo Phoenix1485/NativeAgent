@@ -7,6 +7,13 @@ final class WorkspaceFeaturesController: ObservableObject {
     weak var model: WorkspaceViewModel?
     let database: DatabaseActor
     let fileService = TaskFileService()
+    let attachedFiles = AttachedFileService()
+    let mcp: MCPManager
+    private var mcpSubscription: AnyCancellable?
+    @Published var editingFile: AttachedFileSnapshot?
+    @Published var editorHasChanges = false
+    @Published var importingFiles = false
+    @Published var fileSaveInProgress = false
     let notifications = TaskNotificationService()
     let defaults: UserDefaults
     @Published var panel: WorkspaceCommand?
@@ -36,7 +43,7 @@ final class WorkspaceFeaturesController: ObservableObject {
     private var pendingQueueID: UUID?
     private var searchToken = UUID()
     private var searchTask: Task<Void, Never>?
-    private var contextOwner: UUID?
+    var contextOwner: UUID?
     private var selectionToken = UUID()
     private var restored = false
     private var sessionSaveTask: Task<Void, Never>?
@@ -45,6 +52,7 @@ final class WorkspaceFeaturesController: ObservableObject {
     private var streamedSummary = ""
 
     func shutdown() async {
+        await mcp.shutdown()
         pauseQueue(); cancelSearch(); sessionSaveTask?.cancel(); reportSaveTask?.cancel()
         if var activeTask { if !streamedSummary.isEmpty { activeTask.summary = streamedSummary }; try? await persistReport(activeTask) }
         await saveSession()
@@ -60,6 +68,8 @@ final class WorkspaceFeaturesController: ObservableObject {
 
     init(model: WorkspaceViewModel, database: DatabaseActor, defaults: UserDefaults) {
         self.model = model; self.database = database; self.defaults = defaults
+        mcp = MCPManager(defaults: defaults)
+        mcpSubscription = mcp.objectWillChange.sink { [weak self] in self?.objectWillChange.send() }
         notifications.onOpen = { [weak self] chat, task in
             Task { await self?.openConversation(chat); await self?.openReport(task) }
         }
@@ -188,10 +198,15 @@ final class WorkspaceFeaturesController: ObservableObject {
     }
     func removeContext(_ id: UUID) async { context.removeAll { $0.id == id }; do { try await saveContext() } catch { fail(error) } }
     func validateContext() async {
-        guard let root = model?.selectedProject?.canonicalPath else { return }
+        let root = model?.selectedProject?.canonicalPath
         let owner = contextOwner, values = context
         for item in values {
-            let stale = await fileService.stale(item, root: root)
+            let stale: Bool
+            if let path = item.sourceURL {
+                let snapshot = try? await attachedFiles.load(URL(fileURLWithPath: path))
+                stale = snapshot?.hash != item.sourceHash
+            } else if let root { stale = await fileService.stale(item, root: root) }
+            else { stale = item.path != nil }
             guard owner == contextOwner else { return }
             if let index = context.firstIndex(where: { $0.id == item.id }) { context[index].stale = stale }
         }

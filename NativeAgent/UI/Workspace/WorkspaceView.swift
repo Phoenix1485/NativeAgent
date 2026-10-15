@@ -12,6 +12,9 @@ struct WorkspaceView: View {
 
     var body: some View {
         workspaceLayout
+            .sheet(item: Binding(get: { model.features.editingFile }, set: { model.features.editingFile = $0 })) { file in
+                AttachedFileEditor(file: file, features: model.features).environmentObject(model)
+            }
             .background(sessionObservers)
             .background(WindowFrameRestorer().frame(width: 0, height: 0))
             .sheet(isPresented: Binding(get: { model.features.paletteVisible || model.features.panel != nil }, set: { if !$0 { model.features.paletteVisible = false; model.features.panel = nil } })) {

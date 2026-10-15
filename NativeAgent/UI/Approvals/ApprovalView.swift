@@ -7,7 +7,10 @@ struct ApprovalView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             Label(approval.title, systemImage: "hand.raised.fill").font(.headline).foregroundStyle(.orange)
-            if let command = approval.command { Text(command).font(.body.monospaced()).textSelection(.enabled).padding(8).background(.black.opacity(0.08), in: RoundedRectangle(cornerRadius: 6)) }
+            if let command = approval.command {
+                ScrollView { Text(command).font(.body.monospaced()).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading).padding(8) }
+                    .frame(maxHeight: 260).background(.black.opacity(0.08), in: RoundedRectangle(cornerRadius: 6))
+            }
             if let directory = approval.workingDirectory { LabeledContent("Working directory", value: directory).font(.caption).textSelection(.enabled) }
             HStack {
                 ForEach(approval.choices, id: \.self) { decision in

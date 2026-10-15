@@ -14,6 +14,7 @@ actor ProcessTransport {
     private var stderrContinuation: AsyncStream<Data>.Continuation?
     private var terminationContinuation: AsyncStream<Int32>.Continuation?
     private var generation = UUID()
+    private var writeTail: Task<Void, Error>?
 
     func start(binary: URL, arguments: [String], workingDirectory: URL?, environment: [String: String]? = nil) throws -> Output {
         guard process == nil else { throw NativeAgentError.alreadyRunning }
@@ -61,12 +62,39 @@ actor ProcessTransport {
         Self.drain(standardError.fileHandleForReading, into: stderrSink, group: drains, process: child)
         process = child
         input = standardInput.fileHandleForWriting
+        let fd = standardInput.fileHandleForWriting.fileDescriptor
+        _ = fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK)
+        _ = fcntl(fd, F_SETNOSIGPIPE, 1)
         return Output(stdout: stdout, stderr: stderr, termination: termination)
     }
 
-    func write(_ data: Data) throws {
-        guard let input else { throw NativeAgentError.providerUnavailable("Provider is not connected.") }
-        try input.write(contentsOf: data)
+    func write(_ data: Data) async throws {
+        let previous = writeTail, token = generation
+        let task = Task {
+            try await previous?.value
+            try await writeFrame(data, generation: token)
+        }
+        writeTail = task
+        try await task.value
+    }
+
+    private func writeFrame(_ data: Data, generation token: UUID) async throws {
+        let deadline = ContinuousClock.now.advanced(by: .seconds(5))
+        var offset = 0
+        while offset < data.count {
+            try Task.checkCancellation()
+            guard token == generation, let input else { throw NativeAgentError.providerUnavailable("Provider is not connected.") }
+            guard ContinuousClock.now < deadline else { throw NativeAgentError.requestTimedOut }
+            let count = data.withUnsafeBytes { bytes in
+                Darwin.write(input.fileDescriptor, bytes.baseAddress!.advanced(by: offset), min(65_536, data.count - offset))
+            }
+            if count > 0 { offset += count }
+            else if count < 0 && errno == EINTR { continue }
+            else if count < 0 && (errno == EAGAIN || errno == EWOULDBLOCK) {
+                // Backpressure only while a frame is being written, never idle polling.
+                try await Task.sleep(for: .milliseconds(10))
+            } else { throw NativeAgentError.providerUnavailable("Provider input closed.") }
+        }
     }
 
     func interrupt() {
@@ -100,15 +128,21 @@ actor ProcessTransport {
     private nonisolated static func drain(_ handle: FileHandle, into sink: AsyncStream<Data>.Continuation, group: DispatchGroup, process: Process) {
         DispatchQueue.global(qos: .utility).async {
             defer { try? handle.close(); sink.finish(); group.leave() }
-            do {
-                while let data = try handle.read(upToCount: 65_536), !data.isEmpty {
-                    switch sink.yield(data) {
-                    case .dropped, .terminated: Self.terminate(process); return
-                    case .enqueued: break
-                    @unknown default: Self.terminate(process); return
-                    }
+            // FileHandle's buffered read can wait to fill the requested count on pipes.
+            // A protocol peer keeps stdout open while awaiting our next request: use one
+            // POSIX read, which returns the bytes currently available, without waiting for EOF.
+            var buffer = [UInt8](repeating: 0, count: 65_536)
+            while true {
+                let count = Darwin.read(handle.fileDescriptor, &buffer, buffer.count)
+                if count < 0 && errno == EINTR { continue }
+                guard count > 0 else { return }
+                let data = Data(buffer.prefix(count))
+                switch sink.yield(data) {
+                case .dropped, .terminated: Self.terminate(process); return
+                case .enqueued: break
+                @unknown default: Self.terminate(process); return
                 }
-            } catch { }
+            }
         }
     }
 
@@ -118,6 +152,7 @@ actor ProcessTransport {
 
     private func cleanup() {
         generation = UUID()
+        writeTail?.cancel(); writeTail = nil
         input?.closeFile()
         input = nil
         process = nil

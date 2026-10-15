@@ -15,6 +15,10 @@ struct FileBrowserView: View {
                     HStack {
                         Text(preview.relativePath).font(.caption.monospaced()).lineLimit(1).truncationMode(.middle)
                         Spacer()
+                        Button("Edit…") {
+                            guard let root = model.selectedProject?.canonicalPath else { return }
+                            Task { await model.features.openFileEditor(URL(fileURLWithPath: root).appendingPathComponent(preview.relativePath)) }
+                        }.disabled(model.isWorking).help("Open the complete UTF-8 file in the editor (up to 1 MiB)")
                         Menu("Code actions") {
                             ForEach(["Explain this code", "Review for bugs", "Suggest improvements", "Refactor", "Generate tests", "Generate documentation"], id: \.self) { action in
                                 Button(action) { Task { await model.features.prepareCodeAction(action) } }

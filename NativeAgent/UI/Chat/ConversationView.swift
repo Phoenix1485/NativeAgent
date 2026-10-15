@@ -18,6 +18,7 @@ struct ConversationView: View {
     @State private var availableHeight: CGFloat = 820
     @State private var visiblePromptID: UUID?
     @State private var timelineHeight: CGFloat = 0
+    @State private var showPlugins = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
@@ -51,6 +52,12 @@ struct ConversationView: View {
         }.background(GeometryReader { proxy in
             Color.clear.onAppear { availableHeight = proxy.size.height }.onChange(of: proxy.size.height) { availableHeight = proxy.size.height }
         }).sheet(item: $editor) { GroupEditorView(request: $0) }
+            .sheet(isPresented: $showPlugins) {
+                VStack(alignment: .leading, spacing: 16) {
+                    HStack { Text("MCP plugins").font(.title2); Spacer(); Button("Done") { showPlugins = false }.keyboardShortcut(.cancelAction) }
+                    ScrollView { MCPSettingsView(manager: model.features.mcp) }
+                }.padding(24).frame(width: 680, height: 600)
+            }
             .task(id: model.selectedConversation?.id) { await model.refreshConversationSummaries() }
     }
 
@@ -189,12 +196,25 @@ struct ConversationView: View {
     private var composer: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 12) {
+                Button { Task { await model.features.chooseAttachments() } } label: { Label("Attach", systemImage: "paperclip") }
+                    .disabled(model.features.importingFiles || model.isWorking || model.settings.provider == .claude)
+                    .help("Attach UTF-8 text and code files, or drop them here")
+                Button("Plugins") { showPlugins = true }
                 Button("Templates") { model.features.execute(.templates) }
                 Button("Context (\(model.features.context.count))") { model.features.execute(.context) }
                 Button("Queue draft") { Task { await model.features.enqueueDraft() } }.disabled(model.draft.isEmpty || !model.providerCapabilities.structuredStreaming)
                 Spacer()
                 if model.features.profile != nil { Button("Profile / overrides") { model.features.execute(.context) } }
             }.font(.caption).buttonStyle(.plain).foregroundStyle(.secondary).padding(.horizontal, 18).padding(.top, 12)
+            AttachmentStrip(features: model.features)
+            if model.features.importingFiles { ProgressView("Reading files…").controlSize(.small).padding(12) }
+            if let notice = model.features.notice {
+                HStack {
+                    Text(notice).font(.caption).textSelection(.enabled)
+                    Spacer()
+                    Button { model.features.notice = nil } label: { Image(systemName: "xmark") }.accessibilityLabel("Dismiss attachment notice")
+                }.padding(12)
+            }
             if model.settings.provider == .claude {
                 VStack(alignment: .leading, spacing: 10) {
                     Label("Official Claude Code terminal", systemImage: "terminal").font(.headline)
@@ -265,6 +285,11 @@ struct ConversationView: View {
                 Text("Next message goes to \(model.settings.provider.title), with a bounded excerpt of this chat’s recent messages. Your chat stays here.").font(.caption).foregroundStyle(.secondary).padding(.horizontal, 15).padding(.bottom, 12)
             }
         }.background(Studio.surface, in: RoundedRectangle(cornerRadius: 16))
+            .dropDestination(for: URL.self) { urls, _ in
+                guard !model.isWorking, !model.features.importingFiles, model.settings.provider != .claude, !urls.isEmpty else { return false }
+                Task { await model.features.attachURLs(urls) }
+                return true
+            }
             .overlay(RoundedRectangle(cornerRadius: 16).stroke(composerFocused ? Studio.accent.opacity(0.5) : Studio.line, lineWidth: 1))
             .shadow(color: .black.opacity(0.04), radius: 12, y: 4)
     }

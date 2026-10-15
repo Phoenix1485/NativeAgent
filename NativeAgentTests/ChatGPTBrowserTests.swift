@@ -11,17 +11,36 @@ final class MemoryChatGPTCredentials: ChatGPTCredentialStoring, @unchecked Senda
     func save(_ record: ChatGPTCredentialRecord) { lock.lock(); defer { lock.unlock() }; self.record = record }
 }
 
+private actor ToolExecutionCounter {
+    var count = 0
+    func run() -> String { count += 1; return "fixture tool result" }
+}
+
 private final class ChatGPTFixtureProtocol: URLProtocol {
     static let lock = NSLock()
     static var stream = ""
+    static var queuedStreams: [String] = []
     static var requests: [URLRequest] = []
     static var authResponses: [String: Data] = [:]
-    static func prepare(_ value: String) { lock.lock(); defer { lock.unlock() }; stream = value; requests = [] }
+    static func prepare(_ value: String) { lock.lock(); defer { lock.unlock() }; stream = value; queuedStreams = []; requests = [] }
+    static func prepareStreams(_ values: [String]) { lock.lock(); defer { lock.unlock() }; queuedStreams = values; stream = ""; requests = [] }
     static func setAuth(_ responses: [String: Data]) { lock.lock(); defer { lock.unlock() }; authResponses = responses }
     override class func canInit(with request: URLRequest) -> Bool { true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
     override func startLoading() {
-        Self.lock.lock(); Self.requests.append(request); let stream = Self.stream; let auth = Self.authResponses[request.url?.path ?? ""]; Self.lock.unlock()
+        var captured = request
+        if captured.httpBody == nil, let input = request.httpBodyStream {
+            input.open(); defer { input.close() }
+            var data = Data(), bytes = [UInt8](repeating: 0, count: 4096)
+            while input.hasBytesAvailable {
+                let count = input.read(&bytes, maxLength: bytes.count)
+                if count <= 0 { break }; data.append(contentsOf: bytes.prefix(count))
+            }
+            captured.httpBody = data
+        }
+        Self.lock.lock(); Self.requests.append(captured)
+        let stream = request.url?.path == "/v1/responses" && !Self.queuedStreams.isEmpty ? Self.queuedStreams.removeFirst() : Self.stream
+        let auth = Self.authResponses[request.url?.path ?? ""]; Self.lock.unlock()
         let isModels = request.url?.path == "/v1/models"
         let body = isModels ? #"{"models":[{"slug":"fixture","display_name":"Fixture","visibility":"list"}]}"# : stream
         let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: ["Content-Type": isModels ? "application/json" : "text/event-stream"])!
@@ -194,8 +213,8 @@ final class ChatGPTBrowserTests: XCTestCase {
         XCTAssertEqual(models.map(\.id), ["visible"])
         XCTAssertTrue(models[0].reasoningEfforts.isEmpty)
         XCTAssertThrowsError(try ChatGPTProvider.models(["data": []]))
-        XCTAssertFalse(ChatGPTProvider.capabilities.nativeApprovals)
-        XCTAssertFalse(ChatGPTProvider.capabilities.fileChangeEvents)
+        XCTAssertTrue(ChatGPTProvider.capabilities.nativeApprovals)
+        XCTAssertTrue(ChatGPTProvider.capabilities.fileChangeEvents)
     }
     @MainActor
     func testRealLoginButtonPathOpensBrowserWithoutAnExecutableAndCancellationClearsListener() async throws {
@@ -273,6 +292,63 @@ final class ChatGPTBrowserTests: XCTestCase {
             let (text, status) = await task.value
             XCTAssertEqual(text, "Hello")
             XCTAssertEqual(status, terminal == "response.completed" ? .completed : .failed)
+            await provider.disconnect()
+        }
+    }
+
+    func testNativeToolLoopRequiresApprovalAndPreservesStatelessHistory() async throws {
+        for decision in [ApprovalDecision.accept, .decline, .cancel] {
+            let call: JSONValue = .object(["type": .string("function_call"), "id": .string("fc_fixture"), "call_id": .string("call_fixture"),
+                "namespace": .string("nativeagent"), "name": .string("fixture_tool"), "arguments": .string("{\"text\":\"hello\"}")])
+            let first: JSONValue = .object(["type": .string("response.completed"), "response": .object(["output": .array([call])])])
+            let frame = "data: " + String(decoding: try JSONEncoder().encode(first), as: UTF8.self) + "\n\n"
+            ChatGPTFixtureProtocol.prepareStreams([frame, "data: {\"type\":\"response.completed\",\"response\":{\"output\":[]}}\n\n"])
+            let configuration = URLSessionConfiguration.ephemeral; configuration.protocolClasses = [ChatGPTFixtureProtocol.self]
+            let store = MemoryChatGPTCredentials()
+            var record = store.load(); record.activeClientID = "oaiapp_fixture"
+            record.registrations = [.init(clientID: "oaiapp_fixture", subject: "fixture", email: nil,
+                tokens: .init(accessToken: "fake-access", expiresAt: .now.addingTimeInterval(3600), scope: ChatGPTAuth.scope))]
+            store.save(record)
+            let provider = ChatGPTProvider(store: store, http: ChatGPTHTTP(session: URLSession(configuration: configuration)))
+            let counter = ToolExecutionCounter()
+            await provider.setNativeTools([NativeTool(name: "fixture_tool", description: "Offline fixture", schema: .object(["type": .string("object")])) { _ in
+                PreparedNativeTool(title: "Fixture", review: "Review exact fixture arguments") { await counter.run() }
+            }])
+            let completed = expectation(description: "Tool loop \(decision)")
+            let events = await provider.events
+            let consumer = Task { () -> TurnStatus? in
+                for await event in events {
+                    if case .approval(let request) = event {
+                        let before = await counter.count; XCTAssertEqual(before, 0)
+                        XCTAssertEqual(request.choices, [.accept, .decline, .cancel])
+                        try? await provider.answerApproval(id: request.id, decision: decision)
+                        do { try await provider.answerApproval(id: request.id, decision: .accept); XCTFail("Approval replay accepted") } catch {}
+                    }
+                    if case .turnCompleted(_, let status, _) = event { completed.fulfill(); return status }
+                }
+                return nil
+            }
+            try await provider.connect()
+            try await provider.startTurn(threadID: "fixture", prompt: "Use the test tool", projectPath: "/unused", model: "fixture")
+            await fulfillment(of: [completed], timeout: 5)
+            consumer.cancel()
+            let status = await consumer.value, count = await counter.count
+            XCTAssertEqual(status, decision == .cancel ? .interrupted : .completed)
+            XCTAssertEqual(count, decision == .accept ? 1 : 0)
+            let requests = ChatGPTFixtureProtocol.requests.filter { $0.url?.path == "/v1/responses" }
+            XCTAssertEqual(requests.count, decision == .cancel ? 1 : 2)
+            let body = try JSONDecoder().decode(JSONValue.self, from: XCTUnwrap(requests.first?.httpBody))
+            XCTAssertEqual(body["tools"]?.arrayValue?.first?["type"], .string("namespace"))
+            XCTAssertEqual(body["tools"]?.arrayValue?.first?["name"], .string("nativeagent"))
+            XCTAssertEqual(body["store"], .bool(false)); XCTAssertEqual(body["stream"], .bool(true))
+            XCTAssertNil(body["previous_response_id"])
+            if requests.count == 2 {
+                let second = try JSONDecoder().decode(JSONValue.self, from: XCTUnwrap(requests.last?.httpBody))
+                let input = try XCTUnwrap(second["input"]?.arrayValue)
+                XCTAssertTrue(input.contains(call))
+                XCTAssertEqual(input.last?["type"], .string("function_call_output"))
+                XCTAssertTrue(input.last?["output"]?.stringValue?.contains(decision == .accept ? "fixture tool result" : "denied") == true)
+            }
             await provider.disconnect()
         }
     }

@@ -44,6 +44,9 @@ struct ContextAttachment: Codable, Identifiable, Equatable, Sendable {
     var sourceHash: String?
     var metadata = ""
     var stale = false
+    // Optional fields keep older saved conversations readable. A snapshot is not write permission.
+    var sourceURL: String?
+    var allowEdits: Bool?
     var wireText: String {
         let location = path.map { "\nFile: \($0)" } ?? ""
         let lines = startLine.map { "\nLines: \($0)-\(endLine ?? $0)" } ?? ""

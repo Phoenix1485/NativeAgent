@@ -68,6 +68,17 @@ final class NativeAgentApplicationDelegate: NSObject, NSApplicationDelegate {
     weak var viewModel: WorkspaceViewModel?
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         guard let viewModel else { return .terminateNow }
+        if viewModel.features.fileSaveInProgress {
+            let alert = NSAlert(); alert.messageText = "A file is being saved. Please quit again after it finishes."; alert.runModal()
+            return .terminateCancel
+        }
+        if viewModel.features.editorHasChanges {
+            let alert = NSAlert()
+            alert.messageText = "Discard unsaved file changes and quit?"
+            alert.informativeText = "Your file editor has unsaved changes. Choose Keep editing to save them first."
+            alert.addButton(withTitle: "Keep editing"); alert.addButton(withTitle: "Discard and quit")
+            guard alert.runModal() == .alertSecondButtonReturn else { return .terminateCancel }
+        }
         Task { await viewModel.shutdown(); sender.reply(toApplicationShouldTerminate: true) }
         return .terminateLater
     }

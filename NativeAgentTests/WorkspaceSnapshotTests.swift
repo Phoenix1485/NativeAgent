@@ -75,6 +75,9 @@ final class WorkspaceSnapshotTests: XCTestCase {
         }
         try renderView(SettingsHub(model: model, settings: model.settings, page: .models), name: "settings-models", dark: true, destination: destination, size: NSSize(width: 940, height: 690))
         try renderView(SettingsHub(model: model, settings: model.settings, page: .configuration), name: "settings-configuration", dark: true, destination: destination, size: NSSize(width: 940, height: 690))
+        try renderView(SettingsHub(model: model, settings: model.settings, page: .plugins), name: "settings-plugins", dark: true, destination: destination, size: NSSize(width: 940, height: 690))
+        let file = AttachedFileSnapshot(url: directory.appendingPathComponent("Example.swift"), data: Data("import SwiftUI\n\nstruct Example: View {\n    var body: some View { Text(\"Hello\") }\n}\n".utf8))
+        try renderView(AttachedFileEditor(file: file, features: model.features).environmentObject(model), name: "file-editor", dark: true, destination: destination, size: NSSize(width: 820, height: 620))
         model.settings.mergeCatalog([.init(id: "sonnet", displayName: "Claude Sonnet", reasoningEfforts: ["low", "medium", "high"])], provider: .claude)
         model.settings.provider = .claude
         model.selectedModelID = "sonnet"

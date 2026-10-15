@@ -8,7 +8,7 @@ struct PromptBookmark: Identifiable, Equatable, Sendable {
 
 /// Provider-owned facts, never inferred by scanning generated prose for links.
 struct ConversationFact: Codable, Equatable, Sendable {
-    enum Category: String, Codable, Sendable { case plan, activity, source, status }
+    enum Category: String, Codable, Sendable { case plan, activity, source, status, result }
     let key: String
     let category: Category
     let title: String

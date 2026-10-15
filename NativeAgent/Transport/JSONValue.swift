@@ -31,7 +31,7 @@ enum JSONValue: Codable, Equatable, Sendable {
     }
 
     var stringValue: String? { if case .string(let value) = self { value } else { nil } }
-    var intValue: Int? { if case .number(let value) = self { Int(value) } else { nil } }
+    var intValue: Int? { if case .number(let value) = self { Int(exactly: value) } else { nil } }
     var objectValue: [String: JSONValue]? { if case .object(let value) = self { value } else { nil } }
     var arrayValue: [JSONValue]? { if case .array(let value) = self { value } else { nil } }
 }

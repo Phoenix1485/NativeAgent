@@ -17,7 +17,7 @@ struct ConversationDetailsView: View {
             let fact = ConversationFact.decode(entry.detail)
             switch section {
             case "Sources": return fact?.category == .source
-            case "Results": return entry.kind == .fileChange || entry.kind == .agentMessage
+            case "Results": return entry.kind == .fileChange || entry.kind == .agentMessage || fact?.category == .result
             default: return entry.kind == .command || entry.kind == .error || entry.kind == .approval || fact?.category == .plan || fact?.category == .activity || fact?.category == .status
             }
         }.reversed()
@@ -107,6 +107,7 @@ struct ConversationDetailsView: View {
         if let fact = ConversationFact.decode(entry.detail) {
             switch fact.category {
             case .source: return fact.url == nil ? "doc.text.magnifyingglass" : "globe"
+            case .result: return "tray.full"
             case .plan: return "checklist"
             case .status: return "circle.dotted"
             case .activity: return fact.state == "completed" ? "checkmark.circle" : "terminal"

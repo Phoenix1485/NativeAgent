@@ -2,12 +2,13 @@ import AppKit
 import SwiftUI
 
 enum SettingsPage: String, CaseIterable, Identifiable {
-    case accounts = "Accounts", models = "Models", configuration = "Configuration", appearance = "Appearance"
+    case accounts = "Accounts", models = "Models", plugins = "Plugins", configuration = "Configuration", appearance = "Appearance"
     var id: String { rawValue }
-    var icon: String { switch self { case .accounts: "person.crop.circle"; case .models: "sparkles"; case .configuration: "slider.horizontal.3"; case .appearance: "paintpalette" } }
+    var icon: String { switch self { case .accounts: "person.crop.circle"; case .models: "sparkles"; case .plugins: "puzzlepiece.extension"; case .configuration: "slider.horizontal.3"; case .appearance: "paintpalette" } }
     var subtitle: String { switch self {
     case .accounts: "Your accounts. Your choice of intelligence."
     case .models: "Keep the models you love. Hide the rest."
+    case .plugins: "Trusted tools and data sources through MCP."
     case .configuration: "Decide how your agent works."
     case .appearance: "A workspace that feels like you."
     } }
@@ -49,11 +50,11 @@ struct SettingsHub: View {
                         Text(page.subtitle).font(.system(size: 13)).foregroundStyle(.secondary)
                     }
                     Spacer()
-                    if onboarding { Text("\((SettingsPage.allCases.firstIndex(of: page) ?? 0) + 1) / 4").font(.caption.monospacedDigit()).foregroundStyle(.tertiary).padding(.top, 4) }
+                    if onboarding { Text("\((SettingsPage.allCases.firstIndex(of: page) ?? 0) + 1) / \(SettingsPage.allCases.count)").font(.caption.monospacedDigit()).foregroundStyle(.tertiary).padding(.top, 4) }
                 }.padding(28)
                 ScrollView {
                     VStack(alignment: .leading, spacing: 20) {
-                        switch page { case .accounts: accounts; case .models: models; case .configuration: configuration; case .appearance: appearance }
+                        switch page { case .accounts: accounts; case .models: models; case .plugins: MCPSettingsView(manager: model.features.mcp); case .configuration: configuration; case .appearance: appearance }
                     }.padding(.horizontal, 28).padding(.bottom, 28).frame(maxWidth: .infinity, alignment: .leading)
                 }
                 if onboarding { onboardingFooter }
@@ -316,7 +317,7 @@ struct SettingsHub: View {
             if direct {
                 card {
                     sectionLabel("DIRECT CHATGPT CONNECTION")
-                    Text("Browser sign-in and native HTTPS requests. The saved Codex executable path is not used for account sign-in or chat. Attach files explicitly; this connection cannot execute commands or edit the workspace.").font(.system(size: 12)).foregroundStyle(.secondary)
+                    Text("Browser sign-in and native HTTPS requests. No Codex executable is used. Attach text/code files in the composer; optionally allow reviewed AI edits. Connect trusted MCP servers in Plugins for additional tools.").font(.system(size: 12)).foregroundStyle(.secondary)
                 }
             } else {
             card {
@@ -328,7 +329,7 @@ struct SettingsHub: View {
             }
             card {
                 HStack { sectionLabel("WORKSPACE ACCESS"); Spacer(); Picker("Workspace access", selection: $settings.access) { ForEach(WorkspaceAccess.allCases, id: \.self) { Text($0.title).tag($0) } }.labelsHidden().frame(width: 190).disabled(busy) }
-                Text(direct ? "This direct ChatGPT connection has no local execution or editing tools, regardless of this setting. Only explicitly attached context and a bounded recent conversation excerpt are sent." : "Codex uses sandboxing and native approvals. Claude Code manages permissions in its official terminal; Read only starts its plan mode, which the user can change there. Grok uses native permission prompts and requires plan mode for Read only.").font(.system(size: 12)).foregroundStyle(.secondary).lineSpacing(4)
+                Text(direct ? "Workspace edits enables reviewed changes only to attachments whose ‘Allow AI edits’ option is on. Read only disables those file-edit tools. MCP servers run outside this restriction with your Mac permissions; every MCP tool call still requires approval. No general shell access is provided." : "Codex uses sandboxing and native approvals. Claude Code manages permissions in its official terminal; Read only starts its plan mode, which the user can change there. Grok uses native permission prompts and requires plan mode for Read only.").font(.system(size: 12)).foregroundStyle(.secondary).lineSpacing(4)
             }
             card {
                 sectionLabel("CUSTOM INSTRUCTIONS")

@@ -140,7 +140,7 @@ final class WorkspaceViewModel: ObservableObject {
     }
 
     var canSend: Bool {
-        guard !features.finishingTask, features.activeTask == nil else { return false }
+        guard !features.finishingTask, features.activeTask == nil, !features.importingFiles, !features.editorHasChanges, !features.fileSaveInProgress else { return false }
         guard providerCapabilities.structuredStreaming else { return false }
         guard case .ready = connectionStatus else { return false }
         if let id = selectedConversation?.id, archivingIDs.contains(id) { return false }
@@ -908,9 +908,13 @@ final class WorkspaceViewModel: ObservableObject {
         activeConversationID = conversation.id
         let userEntry = TimelineEntry(kind: .userMessage, title: "You", text: prompt)
         activeUserEntry = userEntry
+        let preparationContextOwner = features.contextOwner
         do {
             try await database.save(conversation: conversation)
             let explicitContext = try await features.contextForSend()
+            let contextSnapshot = features.context
+            let localTools = provider is ChatGPTProvider ? try await features.nativeTools(access: run.access, attachments: contextSnapshot, owner: conversation.id) : []
+            guard features.contextOwner == preparationContextOwner else { throw NativeAgentError.unsupported("Conversation changed while preparing attachments. Review and send again.") }
             try await features.beginTask(conversation: conversation, project: project, prompt: prompt)
             await persistenceTask?.value
             // Direct Responses has no durable provider thread. Resend a disclosed bounded excerpt.
@@ -923,6 +927,9 @@ final class WorkspaceViewModel: ObservableObject {
                 append(.init(kind: .notice, title: "Switched to \(settings.provider.title)", text: "Sent a bounded excerpt of recent visible messages to this provider. Older messages and long-message tails may be omitted."), conversationID: conversation.id)
             }
             await provider.configure(run)
+            if let direct = provider as? ChatGPTProvider {
+                await direct.setNativeTools(localTools)
+            }
             try await database.saveDraft("", conversationID: conversation.id)
             let threadID: String
             if let existing = conversation.remoteThreadID {
@@ -939,6 +946,11 @@ final class WorkspaceViewModel: ObservableObject {
             activeThreadID = threadID
             if canceledBeforeTurn { throw CancellationError() }
             try await provider.startTurn(threadID: threadID, prompt: providerPrompt, projectPath: project.canonicalPath, model: chosenModelID)
+            for item in contextSnapshot {
+                let fact = ConversationFact(key: "attachment/\(userEntry.id)/\(item.id)", category: .source, title: item.title,
+                    text: item.wireText, path: item.path)
+                append(.init(turnID: activeTurnID, kind: .fact, title: fact.title, text: fact.text, detail: fact.encoded), conversationID: conversation.id)
+            }
             if !history.isEmpty {
                 // Store only the exact visible context that this application sent.
                 let fact = ConversationFact(key: "handoff/\(userEntry.id)", category: .source, title: "Recent conversation context", text: providerPrompt)

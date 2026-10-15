@@ -34,6 +34,53 @@ final class WorkspaceFeaturesTests: XCTestCase {
         XCTFail("Timed out waiting for feature state")
     }
 
+    func testFileAttachmentsRequireOptInAndWorkspaceWriteBeforeAIToolsExist() async throws {
+        let url = root.appendingPathComponent("attached.swift")
+        try Data("let value = 1\n".utf8).write(to: url)
+        await model.features.attachURLs([url, url])
+        XCTAssertEqual(model.features.context.count, 1)
+        let attachment = try XCTUnwrap(model.features.context.first)
+        XCTAssertEqual(attachment.allowEdits, false)
+        let owner = model.selectedConversation?.id
+        var tools = try await model.features.nativeTools(access: .workspaceWrite, attachments: model.features.context, owner: owner)
+        XCTAssertTrue(tools.isEmpty)
+        await model.features.setFileEditable(attachment.id, enabled: true)
+        tools = try await model.features.nativeTools(access: .readOnly, attachments: model.features.context, owner: owner)
+        XCTAssertTrue(tools.isEmpty)
+        tools = try await model.features.nativeTools(access: .workspaceWrite, attachments: model.features.context, owner: owner)
+        XCTAssertEqual(tools.count, 1)
+        let prepared = try await tools[0].prepare(.object(["old_text": .string("= 1"), "new_text": .string("= 2")]))
+        XCTAssertEqual(try String(contentsOf: url, encoding: .utf8), "let value = 1\n")
+        XCTAssertTrue(prepared.review.contains("WITH:\n= 2"))
+        _ = try await prepared.execute()
+        XCTAssertEqual(try String(contentsOf: url, encoding: .utf8), "let value = 2\n")
+        XCTAssertEqual(model.features.context.first?.text, "let value = 2\n")
+        await model.features.validateContext()
+        XCTAssertEqual(model.features.context.first?.stale, false)
+        let saved = try await database.feature([ContextAttachment].self, kind: "context", id: XCTUnwrap(owner).uuidString)
+        XCTAssertEqual(saved?.first?.text, "let value = 2\n")
+    }
+
+    func testExternalAttachmentAndUnsavedEditorBlockUnsafeActionsAndRelaunch() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("external.txt")
+        try Data("selected externally".utf8).write(to: url)
+        await model.features.attachURLs([url])
+        let context = try await model.features.contextForSend()
+        XCTAssertTrue(context.contains("selected externally"))
+        try Data("changed outside app".utf8).write(to: url)
+        do { _ = try await model.features.contextForSend(); XCTFail("Sent stale attachment") } catch {}
+        let updater = AppUpdater(); updater.model = model
+        model.features.editorHasChanges = true
+        XCTAssertFalse(model.canSend); XCTAssertTrue(updater.installationMustWait)
+        model.features.editorHasChanges = false
+        model.features.fileSaveInProgress = true
+        XCTAssertTrue(updater.installationMustWait)
+        model.features.fileSaveInProgress = false
+    }
+
     func testBranchPreservesOriginalAndHasIndependentDraftAndSession() async throws {
         let parent = try XCTUnwrap(model.selectedConversation)
         let earlier = TimelineEntry(kind: .agentMessage, title: "Agent", text: "Earlier answer")

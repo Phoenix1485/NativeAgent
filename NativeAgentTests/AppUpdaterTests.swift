@@ -3,6 +3,13 @@ import XCTest
 
 @MainActor
 final class AppUpdaterTests: XCTestCase {
+    func testLaunchCheckRespectsOptOutAndAvoidsRepeatedChecks() {
+        let now = Date()
+        XCTAssertTrue(AppUpdater.shouldCheckAtLaunch(enabled: true, lastCheck: nil, now: now))
+        XCTAssertFalse(AppUpdater.shouldCheckAtLaunch(enabled: false, lastCheck: nil, now: now))
+        XCTAssertFalse(AppUpdater.shouldCheckAtLaunch(enabled: true, lastCheck: now.addingTimeInterval(-60), now: now))
+        XCTAssertTrue(AppUpdater.shouldCheckAtLaunch(enabled: true, lastCheck: now.addingTimeInterval(-901), now: now))
+    }
     func testUpdatesRequireHTTPSAndAnEd25519PublicKey() {
         let key = Data(repeating: 1, count: 32).base64EncodedString()
         XCTAssertTrue(AppUpdater.validConfiguration(["SUFeedURL": "https://example.com/appcast.xml", "SUPublicEDKey": key]))
