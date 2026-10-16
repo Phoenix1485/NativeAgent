@@ -2,6 +2,7 @@ import SwiftUI
 
 struct WorkspaceView: View {
     @EnvironmentObject private var model: WorkspaceViewModel
+    @EnvironmentObject private var updater: AppUpdater
     @AppStorage("showWorkspaceInspector") private var showInspector = false
     @State private var inspectorTab = "Files"
     @State private var showDiagnostics = false
@@ -108,6 +109,19 @@ struct WorkspaceView: View {
                 Text(model.selectedConversation?.title ?? (model.selectedGroup == nil ? "New chat" : "Overview")).fontWeight(.medium).lineLimit(1)
             }.font(.system(size: 13)).lineLimit(1)
             Spacer(minLength: 12)
+            if let version = updater.availableVersion {
+                Button { updater.checkForUpdates() } label: {
+                    Label("Update \(version) available", systemImage: "arrow.down.circle.fill")
+                        .font(.system(size: 11, weight: .semibold))
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(Studio.accent)
+                .padding(.horizontal, 11).padding(.vertical, 7)
+                .background(Studio.accent.opacity(0.12), in: Capsule())
+                .overlay(Capsule().stroke(Studio.accent.opacity(0.3)))
+                .help("Download and install the NativeAgent update")
+                .accessibilityHint("Opens the update installer")
+            }
             HStack(spacing: 6) {
                 Circle().fill(isReady ? Color.green.opacity(0.85) : Color.secondary.opacity(0.5)).frame(width: 5, height: 5)
                 Text(model.isWorking ? model.turnStatus.label : model.connectionStatus.label).font(.system(size: 11))

@@ -24,6 +24,7 @@
         <h1 id="headline">Your workspace.<br><span>Kept up to date.</span></h1>
         <p class="lead">Conversations, project files, and AI assistance. Together in a focused, native Mac app that gets better with every release.</p>
         <div class="actions"><a class="button" id="download" href="https://github.com/Phoenix1485/NativeAgent/releases/latest">Download for macOS <span aria-hidden="true">↓</span></a><a class="secondary" id="release" href="https://github.com/Phoenix1485/NativeAgent/releases">Release notes <span aria-hidden="true">↗</span></a></div>
+        <p class="installed">Already installed? Do not download another copy. Choose <strong>NativeAgent → Check for Updates…</strong> in the app; it replaces the existing app in place.</p>
         <p class="requirements">macOS 14 or later <span aria-hidden="true">·</span> Apple Silicon &amp; Intel</p>
         <p class="version" id="version" aria-live="polite">Latest build available on GitHub Releases</p>
       </div>
@@ -43,10 +44,10 @@
       <figure><img src="workspace.png" width="2560" height="1640" alt="NativeAgent’s native macOS interface, with grouped conversations in the sidebar and a chat in the main workspace." loading="lazy"><figcaption>NativeAgent interface preview with sample conversation content. Provider capabilities depend on the selected integration.</figcaption></figure>
     </section>
     <section class="updates wrap" id="updates" aria-labelledby="updates-title">
-      <div><p class="eyebrow">A SMALL DOWNLOAD. A SIMPLE ROUTINE.</p><h2 id="updates-title">Download once.<br>Keep moving.</h2><p>Install the update-enabled version once. After that, NativeAgent checks for signed releases in the background.</p><a class="text-link" href="appcast.xml">View the signed update feed <span aria-hidden="true">↗</span></a></div>
+      <div><p class="eyebrow">A SMALL DOWNLOAD. A SIMPLE ROUTINE.</p><h2 id="updates-title">Download once.<br>Keep moving.</h2><p>Install the update-enabled version once. After that, use the updater inside NativeAgent. It reads the signed feed from this GitHub Pages site and replaces the same app bundle—it does not install “NativeAgent 2.app”.</p><a class="text-link" href="appcast.xml">View the signed update feed <span aria-hidden="true">↗</span></a></div>
       <div class="instructions">
         <details open><summary>Installing for the first time</summary><p>Download the ZIP, extract NativeAgent, and move the app to Applications. Older builds without an updater also need this one-time installation.</p></details>
-        <details><summary>Automatic updates, on your terms</summary><p>By default, the app checks about hourly, downloads verified updates, and installs on quit. Use NativeAgent → Check for Updates for an immediate check, or change preferences in NativeAgent → Automatic Updates. An active task postpones an updater-requested restart.</p></details>
+        <details><summary>Automatic updates, on your terms</summary><p>By default, the app checks about hourly, downloads verified updates, and replaces its current bundle on quit. Use NativeAgent → Check for Updates… for an immediate check, or change preferences in NativeAgent → Automatic Updates. Do not download each new ZIP manually: Archive Utility adds a numeric suffix when another copy is already present. An active task postpones an updater-requested restart.</p></details>
         <details><summary>What is signed?</summary><p>Sparkle verifies both the update feed and download using NativeAgent’s Ed25519 public key. This protects update integrity; it is separate from Apple Developer ID signing and notarization.</p></details>
       </div>
     </section>

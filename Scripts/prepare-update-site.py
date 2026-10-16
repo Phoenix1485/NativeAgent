@@ -12,6 +12,24 @@ from pathlib import Path
 from urllib.parse import quote
 
 SPARKLE = "http://www.andymatuschak.org/xml-namespaces/sparkle"
+APP_BUNDLE = "NativeAgent.app"
+
+
+def read_archive_info(archive):
+    """Require the update to contain one canonically named application bundle."""
+    with zipfile.ZipFile(archive) as bundle:
+        names = bundle.namelist()
+        app_roots = {
+            name.split("/", 1)[0]
+            for name in names
+            if "/" in name and name.split("/", 1)[0].endswith(".app")
+        }
+        if app_roots != {APP_BUNDLE}:
+            raise ValueError(f"Update archive must contain exactly {APP_BUNDLE}")
+        entry = bundle.getinfo(f"{APP_BUNDLE}/Contents/Info.plist")
+        if entry.file_size > 65536:
+            raise ValueError("Oversized bundle plist")
+        return plistlib.loads(bundle.read(entry))
 
 
 def validate_feed(data, archive, repository, tag, info):
@@ -47,15 +65,18 @@ def main():
     parser.add_argument("--app")
     args = parser.parse_args()
     archive = Path(args.archive)
+    archive_info = read_archive_info(archive)
     if args.app:
-        info = plistlib.loads((Path(args.app) / "Contents/Info.plist").read_bytes())
+        app = Path(args.app)
+        if app.name != APP_BUNDLE:
+            raise ValueError(f"Release bundle must be named {APP_BUNDLE}")
+        info = plistlib.loads((app / "Contents/Info.plist").read_bytes())
+        for key in ("CFBundleIdentifier", "CFBundleVersion", "CFBundleShortVersionString"):
+            if archive_info.get(key) != info.get(key):
+                raise ValueError(f"Archive and release bundle differ for {key}")
     else:
         # CI reads a single plist; it never extracts or runs the downloaded app.
-        with zipfile.ZipFile(archive) as bundle:
-            entry = bundle.getinfo("NativeAgent.app/Contents/Info.plist")
-            if entry.file_size > 65536:
-                raise ValueError("Oversized bundle plist")
-            info = plistlib.loads(bundle.read(entry))
+        info = archive_info
     if info.get("CFBundleIdentifier") != "dev.nativeagent.mac":
         raise ValueError("Unexpected application identifier")
     if args.tag != f"v{info['CFBundleShortVersionString']}-build.{info['CFBundleVersion']}":

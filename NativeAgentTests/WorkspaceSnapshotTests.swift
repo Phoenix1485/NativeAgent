@@ -99,7 +99,7 @@ final class WorkspaceSnapshotTests: XCTestCase {
 
     @MainActor
     private func render(_ model: WorkspaceViewModel, name: String, dark: Bool, destination: String, size: NSSize = NSSize(width: 1280, height: 820)) throws {
-        try renderView(WorkspaceView().environmentObject(model), name: name, dark: dark, destination: destination, size: size)
+        try renderView(WorkspaceView().environmentObject(model).environmentObject(AppUpdater()), name: name, dark: dark, destination: destination, size: size)
     }
 
     @MainActor

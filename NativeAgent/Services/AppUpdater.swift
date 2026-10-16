@@ -6,6 +6,7 @@ import Sparkle
 final class AppUpdater: NSObject, ObservableObject, SPUUpdaterDelegate {
     @Published private(set) var canCheckForUpdates = false
     @Published private(set) var configured = false
+    @Published private(set) var availableVersion: String?
     @Published var automaticallyChecks = true {
         didSet { if configured { controller?.updater.automaticallyChecksForUpdates = automaticallyChecks } }
     }
@@ -52,6 +53,18 @@ final class AppUpdater: NSObject, ObservableObject, SPUUpdaterDelegate {
     }
 
     func checkForUpdates() { controller?.checkForUpdates(nil) }
+
+    func updater(_ updater: SPUUpdater, didFindValidUpdate item: SUAppcastItem) {
+        availableVersion = item.displayVersionString
+    }
+
+    func updaterDidNotFindUpdate(_ updater: SPUUpdater) {
+        availableVersion = nil
+    }
+
+    func updater(_ updater: SPUUpdater, willInstallUpdate item: SUAppcastItem) {
+        availableVersion = nil
+    }
 
     var installationMustWait: Bool {
         guard let model else { return false }

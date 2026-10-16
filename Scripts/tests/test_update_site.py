@@ -72,6 +72,22 @@ class UpdateSiteTests(unittest.TestCase):
         for name in ["release.json", "SHA256SUMS.txt", "appcast.xml"]:
             self.assertEqual((root / "local" / name).read_bytes(), (root / "ci" / name).read_bytes())
 
+    def test_archive_rejects_a_numbered_or_second_app_bundle(self):
+        info = plistlib.dumps({"CFBundleIdentifier": "dev.nativeagent.mac"})
+        for entries in [
+            {"NativeAgent 2.app/Contents/Info.plist": info},
+            {
+                "NativeAgent.app/Contents/Info.plist": info,
+                "NativeAgent 2.app/Contents/Info.plist": info,
+            },
+        ]:
+            with self.subTest(entries=tuple(entries)):
+                with zipfile.ZipFile(self.archive, "w") as bundle:
+                    for name, contents in entries.items():
+                        bundle.writestr(name, contents)
+                with self.assertRaisesRegex(ValueError, "exactly NativeAgent.app"):
+                    module.read_archive_info(self.archive)
+
 
 if __name__ == "__main__":
     unittest.main()

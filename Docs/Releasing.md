@@ -45,6 +45,6 @@ bash Scripts/publish-release.sh --dry-run
 
 ## Installing the first update-enabled app
 
-Older NativeAgent builds do not contain Sparkle. Install the first signed release manually by extracting the ZIP and moving NativeAgent.app into Applications. Thereafter the app checks about hourly and can install verified updates on quit. Use NativeAgent → Check for Updates for a manual check. A first-launch download confirmation can still appear for correctly signed/notarized software; never override a malware warning.
+Older NativeAgent builds do not contain Sparkle. Install the first signed release manually by extracting the ZIP and moving `NativeAgent.app` into Applications. Thereafter, do not download each release ZIP again: Archive Utility will create names such as `NativeAgent 2.app` when another extracted copy is present. Use NativeAgent → Check for Updates… instead. The app reads the signed GitHub Pages feed, downloads the verified release, and replaces the running app bundle at its existing path on quit. A first-launch download confirmation can still appear for correctly signed/notarized software; never override a malware warning.
 
 The script automates release creation, not approval of provider access or commercial distribution rights. Signing/notarization does not establish provider entitlement. Protect GitHub maintainer access and keep signing-key backups private.

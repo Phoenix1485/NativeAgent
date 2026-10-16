@@ -20,6 +20,8 @@ h1 span { color:var(--violet); }
 .button { display:inline-flex; align-items:center; justify-content:center; gap:18px; background:var(--violet); color:#211a38; border-radius:9px; padding:15px 19px; font-size:14px; font-weight:650; }
 .button:hover { background:#c0b3ff; color:#211a38; }
 .secondary { color:var(--muted); font-size:13px; }
+.installed { max-width:510px; margin:18px 0 0; color:var(--muted); font-size:12px; line-height:1.65; }
+.installed strong { color:var(--text); font-weight:550; }
 .requirements { font-size:12px; color:var(--muted); margin-top:19px; }
 .requirements span { padding-inline:7px; }
 .version { font-size:11px; color:var(--muted); margin-top:8px; }

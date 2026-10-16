@@ -21,6 +21,7 @@ struct NativeAgentApp: App {
         WindowGroup {
             LaunchView(model: container.viewModel, settings: container.viewModel.settings)
                 .environmentObject(container.viewModel)
+                .environmentObject(updater)
                 .frame(minWidth: 840, maxWidth: .infinity, minHeight: 560, maxHeight: .infinity)
                 .onAppear { appDelegate.viewModel = container.viewModel; updater.start(model: container.viewModel) }
         }
