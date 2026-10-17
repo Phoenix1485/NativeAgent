@@ -36,7 +36,9 @@ final class ConversationLifecycleTests: XCTestCase {
         let deadline = ContinuousClock.now.advanced(by: .seconds(2))
         while ContinuousClock.now < deadline {
             let prompts = await provider.sentPrompts
-            if prompts.count >= count && !model.isWorking { return }
+            // A completed provider turn can still be saving its report/checkpoint.
+            // Wait for the same task-finalization gates used by canSend.
+            if prompts.count >= count && !model.isWorking && model.features.activeTask == nil && !model.features.finishingTask { return }
             try await Task.sleep(for: .milliseconds(10))
         }
         XCTFail("The fixture turn did not complete before the deadline.")
