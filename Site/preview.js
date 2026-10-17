@@ -4,6 +4,7 @@ const previewTabs = document.querySelector('.preview-tabs');
 if (previewTabs) {
   const tabs = Array.from(previewTabs.querySelectorAll('[role="tab"]'));
   const activate = (selected, focus = false) => {
+    const changed = selected.getAttribute('aria-selected') !== 'true';
     for (const tab of tabs) {
       const active = tab === selected;
       tab.setAttribute('aria-selected', String(active));
@@ -15,6 +16,9 @@ if (previewTabs) {
       panel.tabIndex = 0;
     }
     if (focus) selected.focus();
+    if (changed) document.dispatchEvent(new CustomEvent('nativeagent:preview', {
+      detail: { panel: document.getElementById(selected.getAttribute('aria-controls')) }
+    }));
   };
   for (const [index, tab] of tabs.entries()) {
     tab.addEventListener('click', () => activate(tab));
