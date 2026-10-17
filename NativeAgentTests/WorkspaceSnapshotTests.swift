@@ -6,6 +6,86 @@ import XCTest
 /// Opt-in renders of the actual SwiftUI view with a temporary, offline library.
 final class WorkspaceSnapshotTests: XCTestCase {
     @MainActor
+    func testScrollLoadsOnlyRequestedHistoryPageAndRendersSkeleton() async throws {
+        guard let destination = ProcessInfo.processInfo.environment["NATIVEAGENT_SNAPSHOT_DIR"] else {
+            throw XCTSkip("Set NATIVEAGENT_SNAPSHOT_DIR to verify native scrolling and render skeletons.")
+        }
+        _ = NSApplication.shared
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let suite = "NativeAgentLoadingSnapshots.\(UUID())"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let database = try DatabaseActor(url: directory.appendingPathComponent("loading.sqlite3"))
+        let model = WorkspaceViewModel(provider: SettingsTestProvider(), database: database, files: FileService(), git: GitService(), automaticallyRestore: false, preferences: defaults, credentials: MemoryCredentials(), chatGPTCredentials: MemoryChatGPTCredentials())
+        let chat = Conversation(title: "Long chat fixture")
+        try await database.save(conversation: chat)
+        for index in 1...300 {
+            try await database.save(entry: .init(kind: .userMessage, title: "You", text: "Message \(index)"), conversationID: chat.id)
+        }
+        try FileManager.default.createDirectory(atPath: destination, withIntermediateDirectories: true)
+        model.selectedConversation = chat; model.historyLoading = true
+        try renderView(ConversationView().environmentObject(model), name: "chat-skeleton-dark", dark: true, destination: destination, size: NSSize(width: 800, height: 600))
+        try renderView(ConversationSkeleton(rows: 1, label: "Loading earlier messages…").padding(24), name: "chat-page-skeleton-light", dark: false, destination: destination, size: NSSize(width: 600, height: 150))
+        model.historyLoading = false
+        await model.select(chat)
+        let view = NSHostingView(rootView: ConversationView().environmentObject(model).frame(width: 800, height: 600))
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 800, height: 600), styleMask: [.borderless], backing: .buffered, defer: false)
+        window.contentView = view
+        defer { window.orderOut(nil) }
+        view.layoutSubtreeIfNeeded()
+        try await Task.sleep(for: .milliseconds(250))
+        func findObserver(_ root: NSView) -> TimelineScrollActivity.ObserverView? {
+            if let observer = root as? TimelineScrollActivity.ObserverView { return observer }
+            return root.subviews.lazy.compactMap { findObserver($0) }.first
+        }
+        let observer = try XCTUnwrap(findObserver(view))
+        let scroll = try XCTUnwrap(observer.enclosingScrollView)
+        observer.attach()
+        XCTAssertEqual(model.timeline.count, 40, "Opening and layout must not eagerly load older messages")
+        XCTAssertEqual(model.timeline.last?.text, "Message 300")
+        NotificationCenter.default.post(name: NSScrollView.willStartLiveScrollNotification, object: scroll)
+        let top: CGFloat = scroll.documentView?.isFlipped == true ? 0 : max(0, (scroll.documentView?.bounds.height ?? 0) - scroll.contentView.bounds.height)
+        scroll.contentView.scroll(to: NSPoint(x: 0, y: top)); scroll.reflectScrolledClipView(scroll.contentView)
+        NotificationCenter.default.post(name: NSScrollView.didLiveScrollNotification, object: scroll)
+        for _ in 0..<100 where model.timeline.count == 40 { try await Task.sleep(for: .milliseconds(20)) }
+        XCTAssertEqual(model.timeline.count, 80, "User scrolling near the top requests one page")
+        try await Task.sleep(for: .milliseconds(250))
+        XCTAssertEqual(model.timeline.count, 80, "Page insertion and anchor restoration cannot cascade into more loads")
+        XCTAssertEqual(model.timeline.first?.text, "Message 221")
+        await model.shutdown()
+    }
+
+    @MainActor
+    func testRenderModelPicker() async throws {
+        guard let destination = ProcessInfo.processInfo.environment["NATIVEAGENT_SNAPSHOT_DIR"] else {
+            throw XCTSkip("Set NATIVEAGENT_SNAPSHOT_DIR to render visual verification images.")
+        }
+        _ = NSApplication.shared
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let suite = "NativeAgentPickerSnapshots.\(UUID())"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let model = WorkspaceViewModel(provider: SettingsTestProvider(), database: try DatabaseActor(url: directory.appendingPathComponent("preview.sqlite3")), files: FileService(), git: GitService(), automaticallyRestore: false, preferences: defaults, credentials: MemoryCredentials())
+        let item = ProviderModel(id: "fixture-astra", displayName: "GPT-6 Astra", reasoningEfforts: ["low", "medium", "high", "xhigh", "max"], defaultReasoningEffort: "medium")
+        model.settings.update(.codex) { $0.catalog = [item, .init(id: "fixture-sol", displayName: "GPT-5.6 Sol"), .init(id: "fixture-terra", displayName: "GPT-5.6 Terra"), .init(id: "fixture-luna", displayName: "GPT-5.6 Luna")] }
+        model.selectedModelID = item.id; model.selectedReasoning = "high"
+        try FileManager.default.createDirectory(atPath: destination, withIntermediateDirectories: true)
+        for dark in [true, false] {
+            let accent = dark ? AccentChoice.violet : .mint
+            let suffix = dark ? "dark" : "light"
+            try renderView(ChatModelPickerPanel(showingEffort: .constant(false), dismiss: {}).environmentObject(model).accentColor(accent.color), name: "model-list-" + suffix, dark: dark, destination: destination, size: NSSize(width: 340, height: 365))
+            try renderView(ChatModelPickerPanel(showingEffort: .constant(true), dismiss: {}).environmentObject(model).accentColor(accent.color), name: "model-effort-" + suffix, dark: dark, destination: destination, size: NSSize(width: 340, height: 230))
+            try renderView(ChatModelPicker().environmentObject(model).accentColor(accent.color), name: "model-pill-" + suffix, dark: dark, destination: destination, size: NSSize(width: 320, height: 60))
+        }
+        model.selectedReasoning = ""
+        try renderView(ModelEffortControl(model: item, selection: .constant("")).accentColor(AccentChoice.violet.color), name: "model-effort-auto", dark: true, destination: destination, size: NSSize(width: 340, height: 200))
+        try renderView(ModelEffortControl(model: .init(id: "unknown", displayName: "Provider-managed model"), selection: .constant("")), name: "model-effort-unavailable", dark: true, destination: destination, size: NSSize(width: 340, height: 180))
+        try render(model, name: "model-picker-small-workspace", dark: true, destination: destination, size: NSSize(width: 900, height: 620))
+    }
+
+    @MainActor
     func testRenderWorkspace() async throws {
         guard let destination = ProcessInfo.processInfo.environment["NATIVEAGENT_SNAPSHOT_DIR"] else {
             throw XCTSkip("Set NATIVEAGENT_SNAPSHOT_DIR to render visual verification images.")

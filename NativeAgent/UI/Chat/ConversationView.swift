@@ -19,6 +19,10 @@ struct ConversationView: View {
     @State private var visiblePromptID: UUID?
     @State private var timelineHeight: CGFloat = 0
     @State private var showPlugins = false
+    @State private var messageFrames: [UUID: CGRect] = [:]
+    @State private var pagingIntent = HistoryPagingIntent()
+    @State private var paging = false
+    @State private var pagingRequest = UUID()
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
@@ -34,7 +38,17 @@ struct ConversationView: View {
                     Text("Selected-context branches").foregroundStyle(.secondary)
                 }.font(.caption).padding(.horizontal, 24).padding(.vertical, 8)
             }
-            if model.timeline.isEmpty {
+            if model.timeline.isEmpty && (model.historyLoading || model.historyLoadError != nil) {
+                VStack(alignment: .leading, spacing: 18) {
+                    if let error = model.historyLoadError {
+                        Text("Couldn’t load this chat").font(.headline)
+                        Text(error).font(.caption).foregroundStyle(.secondary)
+                        Button("Retry loading messages") { if let chat = model.selectedConversation { Task { await model.select(chat) } } }
+                    } else { ConversationSkeleton() }
+                    Spacer()
+                }.frame(maxWidth: 680).padding(32).frame(maxWidth: .infinity, maxHeight: .infinity)
+                composer.frame(maxWidth: 780).padding(.horizontal, 28).padding(.bottom, 22)
+            } else if model.timeline.isEmpty {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 28) {
                         Spacer(minLength: 32)
@@ -46,7 +60,7 @@ struct ConversationView: View {
                     }.frame(maxWidth: 680).padding(.horizontal, 36).padding(.top, availableHeight < 700 ? 10 : 65).padding(.bottom, 40).frame(maxWidth: .infinity)
                 }.frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
-                timeline
+                timeline.id(model.selectedConversation?.id)
                 composer.frame(maxWidth: 780).padding(.horizontal, 28).padding(.bottom, 22).padding(.top, 12)
             }
         }.background(GeometryReader { proxy in
@@ -59,6 +73,7 @@ struct ConversationView: View {
                 }.padding(24).frame(width: 680, height: 600)
             }
             .task(id: model.selectedConversation?.id) { await model.refreshConversationSummaries() }
+            .onChange(of: model.selectedConversation?.id) { pagingIntent.reset(); messageFrames = [:]; paging = false; pagingRequest = UUID(); atBottom = true; visiblePromptID = nil }
     }
 
     private var intro: some View {
@@ -117,15 +132,15 @@ struct ConversationView: View {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 24) {
                     if model.hasOlderMessages {
-                        Button(model.historyLoading ? "Loading…" : "Load earlier messages") {
-                            let anchor = model.timeline.first?.id
-                            atBottom = false
-                            Task {
-                                await model.loadOlderMessages()
-                                if let anchor { proxy.scrollTo(anchor, anchor: .top) }
-                            }
-                        }.buttonStyle(.bordered).disabled(model.historyLoading).frame(maxWidth: .infinity)
+                        if model.historyLoadDirection == .older {
+                            ConversationSkeleton(rows: 1, label: "Loading earlier messages…")
+                        } else {
+                            Button("Load earlier messages") { loadPage(.older, proxy: proxy) }
+                                .buttonStyle(.plain).font(.caption).foregroundStyle(.secondary)
+                                .disabled(model.historyLoading || paging).frame(maxWidth: .infinity)
+                        }
                     }
+                    if let error = model.historyLoadError { Text(error).font(.caption).foregroundStyle(.secondary) }
                     ForEach(model.timeline) { item in
                         TimelineItemView(item: item).id(item.id)
                             .background(GeometryReader { geometry in
@@ -143,26 +158,40 @@ struct ConversationView: View {
                     }
                     ForEach(model.conversationQuestions) { question in ProviderQuestionView(request: question) }
                     if model.hasNewerMessages {
-                        Button("Return to latest messages") { Task { await model.loadLatestMessages(); proxy.scrollTo("bottom", anchor: .bottom) } }.buttonStyle(.bordered).frame(maxWidth: .infinity)
+                        if model.historyLoadDirection == .newer { ConversationSkeleton(rows: 1, label: "Loading newer messages…") }
+                        else {
+                            Button("Load newer messages") { loadPage(.newer, proxy: proxy) }
+                                .buttonStyle(.plain).font(.caption).foregroundStyle(.secondary)
+                                .disabled(model.historyLoading || paging).frame(maxWidth: .infinity)
+                        }
                     }
                     Color.clear.frame(height: 1).id("bottom").background(GeometryReader { geometry in
                         Color.clear.preference(key: TimelineBottomKey.self, value: geometry.frame(in: .named("conversationTimeline")).maxY)
                     })
                 }.frame(maxWidth: 780).padding(28).padding(.trailing, model.conversationPrompts.isEmpty ? 0 : 48).frame(maxWidth: .infinity)
+                    .background(TimelineScrollActivity { direction in
+                        pagingIntent.scroll(direction)
+                        tryPaging(proxy: proxy)
+                    })
             }
             .coordinateSpace(name: "conversationTimeline")
             .background(GeometryReader { geometry in
                 Color.clear.onAppear { timelineHeight = geometry.size.height }.onChange(of: geometry.size.height) { timelineHeight = geometry.size.height }
             })
             .onPreferenceChange(TimelineBottomKey.self) { bottom in
+                guard !paging, !model.historyLoading else { return }
                 atBottom = !model.hasNewerMessages && bottom > 0 && bottom <= timelineHeight + 32
             }
             .onPreferenceChange(MessageFramesKey.self) { frames in
+                messageFrames = frames
+                tryPaging(proxy: proxy)
                 guard let top = frames.filter({ $0.value.maxY > 8 }).min(by: { $0.value.minY < $1.value.minY }),
                       let index = model.timeline.firstIndex(where: { $0.id == top.key }) else { return }
                 let id = PromptFisheye.currentPrompt(entryIndex: index, timeline: model.timeline, prompts: model.conversationPrompts)
                 if visiblePromptID != id { visiblePromptID = id; if let id { model.features.session.readingPosition = id } }
             }
+            .onKeyPress(.pageUp) { pagingIntent.scroll(.older); tryPaging(proxy: proxy); return .ignored }
+            .onKeyPress(.pageDown) { pagingIntent.scroll(.newer); tryPaging(proxy: proxy); return .ignored }
             .onChange(of: model.navigationTarget) {
                 guard let id = model.navigationTarget else { return }
                 atBottom = false
@@ -190,6 +219,37 @@ struct ConversationView: View {
                     }.id(model.selectedConversation?.id).padding(.trailing, 10)
                 }
             }
+        }
+    }
+
+    private func tryPaging(proxy: ScrollViewProxy) {
+        guard model.historyLoadError == nil else { return }
+        let first = model.timeline.first.flatMap { messageFrames[$0.id] }
+        let last = model.timeline.last.flatMap { messageFrames[$0.id] }
+        let direction = pagingIntent.take(nearTop: first.map { $0.minY >= -120 && $0.minY < timelineHeight } ?? false,
+                                          nearBottom: last.map { $0.maxY <= timelineHeight + 120 && $0.maxY > 0 } ?? false,
+                                          hasOlder: model.hasOlderMessages, hasNewer: model.hasNewerMessages,
+                                          busy: paging || model.historyLoading)
+        if let direction { loadPage(direction, proxy: proxy) }
+    }
+
+    private func loadPage(_ direction: HistoryPageDirection, proxy: ScrollViewProxy) {
+        guard !paging, !model.historyLoading else { return }
+        let chatID = model.selectedConversation?.id
+        let visible = messageFrames.filter { $0.value.maxY > 0 && $0.value.minY < timelineHeight }.min { $0.value.minY < $1.value.minY }
+        let anchor = visible?.key ?? (direction == .older ? model.timeline.first?.id : model.timeline.last?.id)
+        let request = UUID(); pagingRequest = request
+        paging = true; atBottom = false; pagingIntent.reset()
+        Task { @MainActor in
+            if direction == .older { await model.loadOlderMessages() } else { await model.loadNewerMessages() }
+            guard model.selectedConversation?.id == chatID, pagingRequest == request else { return }
+            await Task.yield()
+            guard model.selectedConversation?.id == chatID, pagingRequest == request else { return }
+            if let anchor, model.timeline.contains(where: { $0.id == anchor }) {
+                var transaction = Transaction(animation: nil); transaction.disablesAnimations = true
+                withTransaction(transaction) { proxy.scrollTo(anchor, anchor: .top) }
+            }
+            paging = false
         }
     }
 
@@ -240,37 +300,8 @@ struct ConversationView: View {
                     }.font(.system(size: 11)).foregroundStyle(.secondary).padding(.horizontal, 9).padding(.vertical, 6)
                         .background(Studio.hover.opacity(0.65), in: Capsule())
                 }.buttonStyle(.plain).disabled(model.selectedConversation?.remoteThreadID != nil).help(model.selectedProject?.canonicalPath ?? "Choose the working folder for this chat")
-                Menu {
-                    ForEach(ProviderKind.allCases) { kind in
-                        Section(kind.title) {
-                            let items = kind == .claude ? [] : model.settings.enabledModels(kind)
-                            if kind == .claude { Button("Use official Claude Code terminal") { Task { await model.useProvider(.claude); await model.connect() } } }
-                            if items.isEmpty && kind != .claude { Text("Add or enable models in Settings") }
-                            ForEach(items) { item in
-                                Button {
-                                    Task { await model.chooseModel(item.id, provider: kind) }
-                                } label: {
-                                    let title = (model.settings.profile(kind).starredModels.contains(item.id) ? "★ " : "") + item.displayName
-                                    if model.settings.provider == kind && model.selectedModelID == item.id { Label(title, systemImage: "checkmark") }
-                                    else { Text(title) }
-                                }
-                            }
-                        }
-                    }
-                    Divider()
-                    SettingsLink { Text("Manage accounts & models…") }
-                } label: {
-                    Text(model.settings.provider == .claude ? "Claude Code terminal" : (model.selectedProviderModel?.displayName ?? "Choose model")).lineLimit(1)
-                }.menuStyle(.borderlessButton).frame(maxWidth: 180).controlSize(.small)
-                    .disabled(model.isWorking || model.accountActionInProgress || model.connectionStatus == .connecting)
-                    .help("Switch models or providers. Native providers receive recent chat context; Claude Code opens a separate terminal conversation.")
-                    if model.settings.provider != .claude, let selected = model.selectedProviderModel, !selected.reasoningEfforts.isEmpty {
-                        Picker("Thinking", selection: Binding(get: { model.selectedReasoning }, set: { model.selectedReasoning = $0 })) {
-                            Text("Auto thinking").tag("")
-                            ForEach(selected.reasoningEfforts, id: \.self) { Text($0.capitalized).tag($0) }
-                        }.labelsHidden().pickerStyle(.menu).frame(maxWidth: 120).controlSize(.small).disabled(model.isWorking)
-                    }
                 Spacer(minLength: 0)
+                ChatModelPicker()
                 if model.isWorking {
                     Button { Task { await model.stop() } } label: { Image(systemName: "stop.fill").frame(width: 31, height: 31) }.buttonStyle(.plain).foregroundStyle(Studio.accent).help("Stop turn")
                 } else {

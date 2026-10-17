@@ -84,6 +84,81 @@ final class PreferencesTests: XCTestCase {
         restored.onboardingComplete = false
         XCTAssertFalse(AppPreferences(defaults: defaults).onboardingComplete)
     }
+
+    func testAutomaticConnectionDefaultsOnAndOptOutPersistsWithoutResettingPreferences() {
+        let settings = AppPreferences(defaults: defaults)
+        XCTAssertTrue(settings.automaticallyConnect)
+        settings.accent = .mint; settings.automaticallyConnect = false
+        let restored = AppPreferences(defaults: defaults)
+        XCTAssertFalse(restored.automaticallyConnect)
+        XCTAssertEqual(restored.accent, .mint)
+    }
+
+    func testStartupConnectsSavedAccountOnceWithoutSendingAndRespectsOptOut() async throws {
+        let store = MemoryChatGPTCredentials()
+        var record = store.load()
+        record.activeClientID = "fixture"
+        record.registrations = [.init(clientID: "fixture", subject: "fixture", email: nil,
+            tokens: .init(accessToken: "fake-access", expiresAt: .now.addingTimeInterval(3600), scope: ChatGPTAuth.scope))]
+        store.save(record)
+        let provider = SettingsTestProvider()
+        let model = WorkspaceViewModel(provider: provider, database: try DatabaseActor(url: directory.appendingPathComponent("startup.sqlite3")), files: FileService(), git: GitService(), automaticallyRestore: false, preferences: defaults, credentials: MemoryCredentials(), chatGPTCredentials: store)
+        await model.reconnectOnLaunch(); await model.reconnectOnLaunch()
+        let connections = await provider.connectCount, prompts = await provider.sentPrompts
+        XCTAssertEqual(connections, 1); XCTAssertTrue(prompts.isEmpty)
+        await model.disconnect(); await model.reconnectOnLaunch()
+        let afterDisconnect = await provider.connectCount
+        XCTAssertEqual(afterDisconnect, 1)
+        model.settings.automaticallyConnect = false
+        let nextProvider = SettingsTestProvider()
+        let optedOut = WorkspaceViewModel(provider: nextProvider, database: try DatabaseActor(url: directory.appendingPathComponent("optout.sqlite3")), files: FileService(), git: GitService(), automaticallyRestore: false, preferences: defaults, credentials: MemoryCredentials(), chatGPTCredentials: store)
+        await optedOut.reconnectOnLaunch()
+        let skipped = await nextProvider.connectCount
+        XCTAssertEqual(skipped, 0)
+    }
+
+    func testStartupWithoutCredentialsAndExplicitDisconnectDoNotConnect() async throws {
+        let provider = SettingsTestProvider()
+        let model = WorkspaceViewModel(provider: provider, database: try DatabaseActor(url: directory.appendingPathComponent("empty-startup.sqlite3")), files: FileService(), git: GitService(), automaticallyRestore: false, preferences: defaults, credentials: MemoryCredentials(), chatGPTCredentials: MemoryChatGPTCredentials())
+        await model.reconnectOnLaunch()
+        let count = await provider.connectCount
+        XCTAssertEqual(count, 0)
+        XCTAssertEqual(model.connectionStatus, .disconnected)
+        await model.disconnect(); await model.reconnectOnLaunch()
+        let afterDisconnect = await provider.connectCount
+        XCTAssertEqual(afterDisconnect, 0)
+    }
+
+    func testRestoringAnotherProviderDoesNotSuppressStartupConnection() async throws {
+        let provider = SettingsTestProvider()
+        let model = WorkspaceViewModel(provider: provider, database: try DatabaseActor(url: directory.appendingPathComponent("provider-startup.sqlite3")), files: FileService(), git: GitService(), automaticallyRestore: false, preferences: defaults, credentials: MemoryCredentials(), chatGPTCredentials: MemoryChatGPTCredentials())
+        model.settings.update(.claude) { $0.verifiedAt = .now }
+        await model.useProvider(.claude)
+        await model.reconnectOnLaunch()
+        let connections = await provider.connectCount
+        XCTAssertEqual(connections, 1)
+        await model.disconnect(); await model.reconnectOnLaunch()
+        let afterDisconnect = await provider.connectCount
+        XCTAssertEqual(afterDisconnect, 1)
+    }
+
+    func testRejectedSavedAuthorizationIsNotRetriedOrTurnedIntoBrowserSignIn() async throws {
+        let store = MemoryChatGPTCredentials()
+        var record = store.load()
+        record.activeClientID = "fixture"
+        record.registrations = [.init(clientID: "fixture", subject: "fixture", email: nil,
+            tokens: .init(accessToken: "fake-expired", expiresAt: .now.addingTimeInterval(-3600), scope: ChatGPTAuth.scope))]
+        store.save(record)
+        let provider = SettingsTestProvider()
+        await provider.setAuthenticated(false)
+        let model = WorkspaceViewModel(provider: provider, database: try DatabaseActor(url: directory.appendingPathComponent("rejected.sqlite3")), files: FileService(), git: GitService(), automaticallyRestore: false, preferences: defaults, credentials: MemoryCredentials(), chatGPTCredentials: store, openBrowser: { _ in XCTFail("Startup must not open sign-in"); return false })
+        await model.reconnectOnLaunch()
+        for _ in 0..<30 { await Task.yield() }
+        await model.reconnectOnLaunch()
+        let connections = await provider.connectCount, prompts = await provider.sentPrompts
+        XCTAssertEqual(connections, 1); XCTAssertTrue(prompts.isEmpty)
+        XCTAssertEqual(model.connectionStatus, .notAuthenticated)
+    }
     func testModelDisablingFavoritesAndDefaultFallback() {
         let settings = AppPreferences(defaults: defaults)
         settings.update(.codex) { $0.catalog = [.init(id: "a", displayName: "Alpha", isDefault: true), .init(id: "z", displayName: "Zeta")]; $0.starredModels = ["z"] }
@@ -105,6 +180,38 @@ final class PreferencesTests: XCTestCase {
         XCTAssertNil(settings.reasoning(for: item, provider: .codex))
         settings.update(.codex) { $0.reasoning["a"] = "high" }
         XCTAssertEqual(settings.reasoning(for: item, provider: .codex), "high")
+    }
+    func testEffortSliderOrderingAndClampedSelection() {
+        XCTAssertEqual(ModelEffort.levels(["high", "low", "high", "", "xhigh", "medium"]), ["low", "medium", "high", "xhigh"])
+        XCTAssertNil(ModelEffort.index(at: 0.5, count: 0))
+        XCTAssertNil(ModelEffort.index(at: .nan, count: 3))
+        XCTAssertEqual(ModelEffort.index(at: -1, count: 5), 0)
+        XCTAssertEqual(ModelEffort.index(at: 0.5, count: 5), 2)
+        XCTAssertEqual(ModelEffort.index(at: 2, count: 5), 4)
+        XCTAssertEqual(ModelEffort.index(at: 0.8, count: 1), 0)
+        XCTAssertEqual(ModelEffort.title("xhigh"), "Extra high")
+        XCTAssertEqual(ModelEffort.title(""), "Auto")
+    }
+
+    func testPickerEffortPersistsPerModelAndResetUsesProviderDefault() throws {
+        let model = try model()
+        let first = ProviderModel(id: "first", displayName: "First", reasoningEfforts: ["low", "high"], defaultReasoningEffort: "low")
+        let second = ProviderModel(id: "second", displayName: "Second", reasoningEfforts: ["medium", "high"])
+        model.settings.update(.codex) { $0.catalog = [first, second] }
+        model.selectedModelID = first.id
+        model.selectedReasoning = "high"
+        model.selectedReasoning = "invalid"
+        XCTAssertEqual(model.selectedReasoning, "high")
+        model.selectedModelID = second.id
+        XCTAssertEqual(model.selectedReasoning, "")
+        model.selectedReasoning = "medium"
+        let restored = AppPreferences(defaults: defaults)
+        XCTAssertEqual(restored.reasoning(for: first, provider: .codex), "high")
+        XCTAssertEqual(restored.reasoning(for: second, provider: .codex), "medium")
+        model.selectedModelID = first.id
+        model.selectedReasoning = ""
+        XCTAssertEqual(model.settings.effectiveReasoning(for: first, provider: .codex), "low")
+        XCTAssertNil(AppPreferences(defaults: defaults).reasoning(for: first, provider: .codex))
     }
     func testKeysNeverWrittenToPreferencesAndRemovalWorks() async throws {
         let keys = MemoryCredentials(), value = "test-secret-not-a-real-key"

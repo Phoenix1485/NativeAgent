@@ -69,6 +69,7 @@ final class AppPreferences: ObservableObject {
     @Published var textSize: Double { didSet { save() } }
     @Published var showTimestamps: Bool { didSet { save() } }
     @Published var onboardingComplete: Bool { didSet { save() } }
+    @Published var automaticallyConnect: Bool { didSet { defaults.set(automaticallyConnect, forKey: "nativeagent.automaticallyConnect") } }
     private let defaults: UserDefaults
     private let key = "nativeagent.preferences.v1"
 
@@ -90,6 +91,7 @@ final class AppPreferences: ObservableObject {
         provider = saved.provider; providers = saved.providers; theme = saved.theme; accent = saved.accent
         access = saved.access; instructions = saved.instructions; textSize = saved.textSize
         showTimestamps = saved.showTimestamps; onboardingComplete = saved.onboardingComplete
+        automaticallyConnect = defaults.object(forKey: "nativeagent.automaticallyConnect") as? Bool ?? true
         if providers[ProviderKind.codex.rawValue] == nil, let oldPath = defaults.string(forKey: "codexBinaryPath") {
             providers[ProviderKind.codex.rawValue] = ProviderPreference(binaryPath: oldPath)
         }

@@ -35,7 +35,7 @@ User-supplied API keys are stored in device-only macOS Keychain entries. Codex r
 
 Provider child environments remove inherited API keys, OAuth token overrides, alternate-provider selectors and workload-identity overrides before adding any explicitly selected API key. This does not change the user's global environment. Provider-managed configuration and organization policies still apply; a mismatched auth method is rejected, not silently accepted. Another independent client changing a shared login after a status check remains an external race; NativeAgent performs fresh checks but cannot lock other clients' provider profiles.
 
-Pipe readers run off the main actor, drain stdout/stderr, and preserve partial JSON frames. Pipe and RPC queues are bounded; protocol overflow/EOF fails the connection rather than claiming success. Commands have deadlines and cancellation; owned processes receive termination with a bounded kill fallback. No provider starts at application launch, and app termination disconnects owned runtimes. Explicitly opened Claude terminal conversations belong to the Terminal window and can continue after the GUI closes.
+Pipe readers run off the main actor, drain stdout/stderr, and preserve partial JSON frames. Pipe and RPC queues are bounded; protocol overflow/EOF fails the connection rather than claiming success. Commands have deadlines and cancellation; owned processes receive termination with a bounded kill fallback. Automatic connection reuses the selected saved authorization once per launch (opt out in Configuration), without browser sign-in or sending work. App termination disconnects owned runtimes. Explicitly opened Claude terminal conversations belong to the Terminal window and can continue after the GUI closes.
 
 ## Claude Code terminal fallback
 
@@ -60,6 +60,10 @@ First sign-in uses the documented dynamic-registration entry point with NativeAg
 Native URLSession requests use the public `/v1/models` and `/v1/responses` endpoints, `store:false` and `stream:true`. Only a terminal `response.completed` is success; failed/incomplete/disconnected streams are not retried automatically. The direct adapter has **no local shell/file-edit tools** and advertises no native approvals/file-change events. A bounded visible-history excerpt is explicitly resent, recorded as context, and may omit older messages. Account-specific models replace the old runtime catalog; unsupported thinking levels are not invented. Eligibility and commercial partner access remain provider requirements, not claims established by this build.
 
 Browser/authentication tests use generated cryptographic fixtures, fake credentials and local loopback HTTP only. Real provider consent, eligibility and authenticated inference still require an owner-operated live check. No real login credentials were copied or modified during development.
+
+### Chat model picker and speed / thinking control
+
+The composer has a model list and a discrete effort slider, styled with the user's accent. Choices are saved per model; reset removes the override and uses the advertised model default. Optional `supported_reasoning_levels` and `default_reasoning_level` catalog metadata enable the direct ChatGPT slider. Missing metadata does not imply support, and Claude's terminal continues to manage its own models. The direct adapter validates against its current catalog and captures effort once for every request in a turn, including tool follow-ups, using [Responses `reasoning.effort`](https://developers.openai.com/api/docs/guides/reasoning). This trades thinking effort against latency, not a guaranteed response time or a paid `service_tier`. Offline tests verify request bodies; live account eligibility is not inferred from fixtures.
 
 ### Direct-browser validation — build 0.4.1
 

@@ -236,7 +236,7 @@ final class WorkspaceFeaturesTests: XCTestCase {
         try await database.saveTaskReport(interruptedReport)
         await model.shutdown()
         let otherProvider = SettingsTestProvider()
-        let restored = WorkspaceViewModel(provider: otherProvider, database: database, files: FileService(), git: GitService(), automaticallyRestore: false, preferences: defaults, credentials: MemoryCredentials())
+        let restored = WorkspaceViewModel(provider: otherProvider, database: database, files: FileService(), git: GitService(), automaticallyRestore: false, preferences: defaults, credentials: MemoryCredentials(), chatGPTCredentials: MemoryChatGPTCredentials())
         await restored.restore()
         XCTAssertEqual(restored.selectedConversation?.id, chat.id)
         XCTAssertEqual(restored.draft, "Unsaved composer text")

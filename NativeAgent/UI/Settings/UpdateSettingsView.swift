@@ -33,13 +33,11 @@ struct WhatsNewView: View {
     @EnvironmentObject private var updater: AppUpdater
     @Environment(\.dismiss) private var dismiss
     private let highlights = [
-        ("Long-chat memory", "Older messages get a rolling summary; pinned instructions stay with your chat."),
-        ("Images and PDFs", "Preview attachments and send their actual contents through the direct ChatGPT connection."),
-        ("Edit, regenerate and retry", "Start a separate retry branch while keeping the original conversation."),
-        ("Backups and exports", "Daily local backups, safe restore, and full-message Markdown or PDF exports."),
-        ("Find your important chats", "Pinned chats, persistent unread replies, and a working indicator."),
-        ("Visible update status", "Last-check time, download progress, errors and these release highlights."),
-        ("Project memory", "Save frameworks, conventions, goals, decisions and things to avoid for every chat in a project.")
+        ("Automatic connection", "Saved accounts connect on launch. Turn this off in Settings → Configuration; no prompts are sent automatically."),
+        ("Lighter chat loading", "Skeleton placeholders, newest messages first, and older pages loaded as you scroll. The timeline keeps at most 200 items loaded."),
+        ("Model and effort picker", "A redesigned picker with an effort slider for models that advertise supported thinking levels."),
+        ("Clearer AI naming", "AI naming requires five user messages and checks the saved chat, even when older messages are not loaded on screen."),
+        ("Subtle navigation highlights", "Only the clicked prompt marker is highlighted, using your selected accent color before fading away.")
     ]
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {

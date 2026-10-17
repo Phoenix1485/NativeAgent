@@ -5,6 +5,26 @@ private struct RailOffsetKey: PreferenceKey {
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = nextValue() }
 }
 
+/// A fresh request also restarts the flash when the same marker is clicked twice.
+struct PromptMinimapHighlight {
+    private(set) var promptID: UUID?
+    private(set) var requestID: UUID?
+    private(set) var opacity: Double = 0
+
+    mutating func show(_ id: UUID) {
+        promptID = id
+        requestID = UUID()
+        opacity = 1
+    }
+
+    mutating func fade(request: UUID) {
+        guard request == requestID else { return }
+        opacity = 0
+    }
+
+    func opacity(for id: UUID) -> Double { promptID == id ? opacity : 0 }
+}
+
 /// Lazy rows keep long prompt indexes cheap. No timer or idle animation runs.
 struct ConversationMinimap: View {
     let prompts: [PromptBookmark]
@@ -15,6 +35,7 @@ struct ConversationMinimap: View {
     @State private var pointerY: CGFloat?
     @State private var contentOffset: CGFloat = 0
     @State private var keyboardID: UUID?
+    @State private var highlight = PromptMinimapHighlight()
     @FocusState private var keyboardFocused: Bool
 
     private var hoveredIndex: Int? { pointerY.flatMap { PromptFisheye.nearestIndex(y: $0 - contentOffset, count: prompts.count) } }
@@ -38,9 +59,21 @@ struct ConversationMinimap: View {
     private func promptButton(_ prompt: PromptBookmark, index: Int) -> some View {
         let center = CGFloat(index) * PromptFisheye.pitch + PromptFisheye.pitch / 2
         let strength: CGFloat = pointerY.map { PromptFisheye.strength(distance: center - ($0 - contentOffset)) } ?? (keyboardFocused && keyboardID == prompt.id ? 1 : 0)
-        return PromptMinimapButton(prompt: prompt, number: index + 1, current: prompt.id == currentID, strength: strength) {
-            keyboardID = prompt.id; navigate(prompt.id)
+        return PromptMinimapButton(prompt: prompt, number: index + 1, current: prompt.id == currentID, strength: strength, highlightOpacity: highlight.opacity(for: prompt.id)) {
+            activate(prompt.id)
         }.id(prompt.id).animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: strength)
+    }
+
+    private func showHighlight(_ id: UUID) {
+        var transaction = Transaction(animation: nil)
+        transaction.disablesAnimations = true
+        withTransaction(transaction) { highlight.show(id) }
+    }
+
+    private func activate(_ id: UUID) {
+        keyboardID = id
+        showHighlight(id)
+        navigate(id)
     }
 
     var body: some View {
@@ -51,6 +84,7 @@ struct ConversationMinimap: View {
                     switch phase { case .active(let point): pointerY = point.y; case .ended: pointerY = nil }
                 }
                 .focusable().focused($keyboardFocused)
+                .focusEffectDisabled()
                 .accessibilityLabel("Conversation prompt navigation")
                 .accessibilityHint("Use Up and Down to choose a prompt, then Return to navigate")
                 .onMoveCommand { direction in
@@ -58,16 +92,20 @@ struct ConversationMinimap: View {
                     let old = prompts.firstIndex(where: { $0.id == (keyboardID ?? currentID) }) ?? 0
                     let next = min(prompts.count - 1, max(0, old + (direction == .down ? 1 : -1)))
                     keyboardID = prompts[next].id; proxy.scrollTo(prompts[next].id, anchor: .center)
+                    showHighlight(prompts[next].id)
                 }
                 .onKeyPress(.return) {
                     guard let id = keyboardID ?? currentID ?? prompts.first?.id else { return .ignored }
-                    navigate(id); return .handled
+                    activate(id); return .handled
                 }
                 .onKeyPress(.escape) { keyboardFocused = false; pointerY = nil; return .handled }
                 .onChange(of: keyboardFocused) {
                     if keyboardFocused {
                         keyboardID = keyboardID ?? currentID ?? prompts.first?.id
-                        if let keyboardID { proxy.scrollTo(keyboardID, anchor: .center) }
+                        if let keyboardID {
+                            proxy.scrollTo(keyboardID, anchor: .center)
+                            showHighlight(keyboardID)
+                        }
                     }
                 }
                 .onChange(of: currentID) {
@@ -78,6 +116,15 @@ struct ConversationMinimap: View {
         .frame(width: 48, height: min(max(14, maximumHeight - 20), CGFloat(prompts.count) * PromptFisheye.pitch))
         .padding(.vertical, 10).padding(.trailing, 8)
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 10))
+        .task(id: highlight.requestID) {
+            guard let request = highlight.requestID else { return }
+            do { try await Task.sleep(for: .milliseconds(450)) }
+            catch { return }
+            guard !Task.isCancelled else { return }
+            withAnimation(reduceMotion ? nil : .easeOut(duration: 0.35)) {
+                highlight.fade(request: request)
+            }
+        }
         .overlay(alignment: .trailing) {
             if let prompt = previewPrompt {
                 VStack(alignment: .leading, spacing: 6) {
@@ -97,6 +144,7 @@ private struct PromptMinimapButton: View {
     let number: Int
     let current: Bool
     let strength: CGFloat
+    let highlightOpacity: Double
     let action: () -> Void
 
     var body: some View {
@@ -106,7 +154,15 @@ private struct PromptMinimapButton: View {
                 Capsule().fill(current ? Studio.accent : Color.secondary.opacity(0.5 + Double(strength) * 0.4))
                     .frame(width: 13 + strength * 21, height: 2 + strength * 3)
             }.frame(width: 44, height: PromptFisheye.pitch, alignment: .trailing).contentShape(Rectangle())
+                .overlay {
+                    RoundedRectangle(cornerRadius: 4)
+                        .strokeBorder(Studio.accent, lineWidth: 1.5)
+                        .opacity(highlightOpacity)
+                        .allowsHitTesting(false)
+                        .accessibilityHidden(true)
+                }
         }.buttonStyle(.plain)
+            .focusEffectDisabled()
             .accessibilityLabel("Prompt \(number): \(prompt.preview)")
             .accessibilityValue(current ? "Current conversation position" : "")
             .accessibilityHint("Scroll to this message")

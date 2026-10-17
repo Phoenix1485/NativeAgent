@@ -85,7 +85,7 @@ struct FeaturePanel: View {
                             Toggle(event.capitalized, isOn: Binding(get: { features.notificationEnabled(event) }, set: { features.setNotification(event, enabled: $0) })).disabled(!features.notificationsEnabled)
                         }
                         Text("Question alerts require an explicit provider question event; ordinary reply text is never treated as a question.").font(.caption).foregroundStyle(.secondary)
-                        Toggle("Reconnect asynchronously after restoring the app", isOn: $features.session.reconnect)
+                        Toggle("Connect automatically when the app opens", isOn: Binding(get: { model.settings.automaticallyConnect }, set: { model.settings.automaticallyConnect = $0 }))
                         Text("Interrupted tasks require review. Restoring never resends a request.").font(.caption).foregroundStyle(.secondary)
                     }.padding(8).frame(maxWidth: .infinity, alignment: .leading)
                 }

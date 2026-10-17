@@ -111,10 +111,9 @@ final class WorkspaceFeaturesController: ObservableObject {
             else if let project = model?.projects.first(where: { $0.id == saved.projectID }) { await model?.select(project) }
             session = saved
             if let path = saved.selectedFile { await openFile(path) }
-            if let id = saved.readingPosition { await model?.navigateToMessage(id) }
+            // Open at the newest page. Old reading positions must not trigger eager history loading.
             if let command = saved.featurePanel.flatMap(WorkspaceCommand.init(rawValue:)), canExecute(command) { panel = command }
             if panel == .reports, let id = saved.reportID { await openReport(id) }
-            if saved.reconnect { Task { [weak self] in await self?.model?.connect() } }
         } catch { fail(error) }
     }
 

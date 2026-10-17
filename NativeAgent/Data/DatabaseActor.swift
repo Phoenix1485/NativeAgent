@@ -273,7 +273,7 @@ actor DatabaseActor {
         )
     }
 
-    func timeline(conversationID: UUID, limit: Int = 100, beforeOrder: Int? = nil, previewCharacters: Int? = nil, messagesOnly: Bool = false, detailsOnly: Bool = false) throws -> [TimelineEntry] {
+    func timeline(conversationID: UUID, limit: Int = 100, beforeOrder: Int? = nil, afterOrder: Int? = nil, previewCharacters: Int? = nil, messagesOnly: Bool = false, detailsOnly: Bool = false) throws -> [TimelineEntry] {
         try ensureInitialized()
         let textColumn = previewCharacters.map { "substr(display_text,1,\(max(1, $0)))" } ?? "display_text"
         var sql = "SELECT id,turn_id,kind,title,\(textColumn),metadata_json,created_at,is_streaming,received_order,length(display_text) FROM timeline_items WHERE conversation_id=?"
@@ -281,16 +281,18 @@ actor DatabaseActor {
         if messagesOnly { sql += " AND kind IN ('userMessage','agentMessage')" }
         if detailsOnly { sql += " AND kind IN ('fact','command','fileChange','agentMessage','error','approval')" }
         if let beforeOrder { sql += " AND received_order < ?"; bindings.append(.int(beforeOrder)) }
+        if let afterOrder { sql += " AND received_order > ?"; bindings.append(.int(afterOrder)) }
         // Updated plans/statuses retain their timeline order, but are recent
         // details even after a long run has added hundreds of other records.
-        sql += detailsOnly ? " ORDER BY created_at DESC, received_order DESC LIMIT ?" : " ORDER BY received_order DESC LIMIT ?"
+        sql += detailsOnly ? " ORDER BY created_at DESC, received_order DESC LIMIT ?" : afterOrder != nil ? " ORDER BY received_order ASC LIMIT ?" : " ORDER BY received_order DESC LIMIT ?"
         bindings.append(.int(limit))
-        return try query(sql, bindings) { row in
+        let entries = try query(sql, bindings) { row in
             var entry = TimelineEntry(id: UUID(uuidString: row.text(0)) ?? UUID(), turnID: row.optionalText(1), kind: TimelineKind(rawValue: row.text(2)) ?? .notice, title: row.text(3), text: row.text(4), detail: row.optionalText(5), createdAt: Date(timeIntervalSince1970: row.double(6)), isStreaming: row.int(7) != 0)
             entry.receivedOrder = row.int(8)
             entry.textIsPreview = previewCharacters.map { row.int(9) > $0 } ?? false
             return entry
-        }.reversed()
+        }
+        return afterOrder != nil && !detailsOnly ? entries : entries.reversed()
     }
 
     func renameConversation(id: UUID, title: String) throws -> Conversation {
@@ -301,6 +303,17 @@ actor DatabaseActor {
         try execute("UPDATE conversations SET title=? WHERE id=?", [.text(title), .text(id.uuidString)])
         var renamed = existing; renamed.title = title
         return renamed
+    }
+
+    /// Eligibility and stable transcript boundary, independent of the UI's preview window.
+    func titleContext(conversationID: UUID) throws -> (userMessageCount: Int, lastMessageOrder: Int) {
+        try ensureInitialized()
+        guard let chat = try conversation(id: conversationID), chat.archivedAt == nil else {
+            throw NativeAgentError.unsupported("This chat is no longer available to rename.")
+        }
+        // Count and upper bound come from the same snapshot, not the currently loaded UI page.
+        return try query("SELECT COALESCE(SUM(CASE WHEN kind='userMessage' THEN 1 ELSE 0 END),0),COALESCE(MAX(received_order),0) FROM timeline_items WHERE conversation_id=? AND kind IN ('userMessage','agentMessage') AND is_streaming=0",
+                         [.text(conversationID.uuidString)]) { ($0.int(0), $0.int(1)) }.first ?? (0, 0)
     }
 
     /// Full message text, oldest first. Used independently of the UI's preview window.
@@ -320,12 +333,14 @@ actor DatabaseActor {
     }
 
     /// Only IDs, order and short excerpts are loaded, not full conversation bodies.
-    func promptBookmarks(conversationID: UUID) throws -> [PromptBookmark] {
+    func promptBookmarks(conversationID: UUID, limit: Int? = nil) throws -> [PromptBookmark] {
         try ensureInitialized()
-        return try query("SELECT id,received_order,substr(display_text,1,240) FROM timeline_items WHERE conversation_id=? AND kind='userMessage' ORDER BY received_order", [.text(conversationID.uuidString)]) { row -> PromptBookmark? in
+        let order = limit.map { " ORDER BY received_order DESC LIMIT \(max(1, $0))" } ?? " ORDER BY received_order"
+        let entries = try query("SELECT id,received_order,substr(display_text,1,240) FROM timeline_items WHERE conversation_id=? AND kind='userMessage'" + order, [.text(conversationID.uuidString)]) { row -> PromptBookmark? in
             guard let id = UUID(uuidString: row.text(0)) else { return nil }
             return PromptBookmark(id: id, order: row.int(1), preview: row.text(2))
         }.compactMap { $0 }
+        return limit == nil ? entries : entries.reversed()
     }
 
     func timelineWindow(conversationID: UUID, around id: UUID) throws -> [TimelineEntry] {

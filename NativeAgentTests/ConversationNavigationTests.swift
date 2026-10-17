@@ -2,6 +2,53 @@ import XCTest
 @testable import NativeAgent
 
 final class ConversationNavigationTests: XCTestCase {
+    func testScrollPagingRequiresIntentAndCannotCascadeFromLayoutAlone() {
+        var intent = HistoryPagingIntent()
+        XCTAssertNil(intent.take(nearTop: true, nearBottom: true, hasOlder: true, hasNewer: true, busy: false))
+        intent.scroll(.older)
+        XCTAssertNil(intent.take(nearTop: false, nearBottom: true, hasOlder: true, hasNewer: true, busy: false))
+        XCTAssertNil(intent.take(nearTop: true, nearBottom: false, hasOlder: true, hasNewer: true, busy: true))
+        XCTAssertEqual(intent.take(nearTop: true, nearBottom: false, hasOlder: true, hasNewer: true, busy: false), .older)
+        XCTAssertNil(intent.take(nearTop: true, nearBottom: false, hasOlder: true, hasNewer: true, busy: false))
+        intent.scroll(.newer)
+        XCTAssertEqual(intent.take(nearTop: false, nearBottom: true, hasOlder: true, hasNewer: true, busy: false), .newer)
+        intent.scroll(.older); intent.reset()
+        XCTAssertNil(intent.direction)
+    }
+    func testPromptHighlightOnlySurroundsSelectedMarkerAndFades() throws {
+        var highlight = PromptMinimapHighlight()
+        let selected = UUID(), other = UUID()
+        XCTAssertNil(highlight.requestID)
+        XCTAssertEqual(highlight.opacity(for: selected), 0)
+        highlight.show(selected)
+        XCTAssertEqual(highlight.opacity(for: selected), 1)
+        XCTAssertEqual(highlight.opacity(for: other), 0)
+        highlight.fade(request: try XCTUnwrap(highlight.requestID))
+        XCTAssertEqual(highlight.opacity(for: selected), 0)
+    }
+
+    func testPromptHighlightRestartsForRepeatedClicksAndIgnoresStaleFade() throws {
+        var highlight = PromptMinimapHighlight()
+        let first = UUID(), second = UUID()
+        highlight.show(first)
+        let initialRequest = try XCTUnwrap(highlight.requestID)
+        highlight.fade(request: initialRequest)
+        highlight.show(first)
+        XCTAssertNotEqual(highlight.requestID, initialRequest)
+        XCTAssertEqual(highlight.opacity(for: first), 1)
+        highlight.fade(request: initialRequest)
+        XCTAssertEqual(highlight.opacity(for: first), 1)
+
+        let repeatedRequest = try XCTUnwrap(highlight.requestID)
+        highlight.show(second)
+        XCTAssertEqual(highlight.opacity(for: first), 0)
+        XCTAssertEqual(highlight.opacity(for: second), 1)
+        highlight.fade(request: repeatedRequest)
+        XCTAssertEqual(highlight.opacity(for: second), 1)
+        highlight.fade(request: try XCTUnwrap(highlight.requestID))
+        XCTAssertEqual(highlight.opacity(for: second), 0)
+    }
+
     func testVisiblePromptSurvivesEvictionDuringLongLiveToolRun() {
         let first = TimelineEntry(kind: .userMessage, title: "You", text: "First")
         let second = TimelineEntry(kind: .userMessage, title: "You", text: "Second")

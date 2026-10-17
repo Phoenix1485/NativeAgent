@@ -216,6 +216,58 @@ final class ChatGPTBrowserTests: XCTestCase {
         XCTAssertTrue(ChatGPTProvider.capabilities.nativeApprovals)
         XCTAssertTrue(ChatGPTProvider.capabilities.fileChangeEvents)
     }
+
+    func testModelCatalogPreservesOnlyAdvertisedEffortAndValidDefault() throws {
+        let models = try ChatGPTProvider.models(["models": [
+            ["slug": "reasoner", "display_name": "Reasoner", "visibility": "list", "is_default": true,
+             "supported_reasoning_levels": [["effort": "high"], ["effort": "low"], ["effort": "high"], ["description": "missing effort"]],
+             "default_reasoning_level": "low"],
+            ["slug": "other", "display_name": "Other", "visibility": "list", "supported_reasoning_levels": ["medium"], "default_reasoning_level": "high"],
+            ["slug": "unknown", "display_name": "Unknown", "visibility": "list", "default_reasoning_level": "high"]]])
+        XCTAssertEqual(models[0].reasoningEfforts, ["low", "high"])
+        XCTAssertEqual(models[0].defaultReasoningEffort, "low")
+        XCTAssertTrue(models[0].isDefault)
+        XCTAssertNil(models[1].defaultReasoningEffort)
+        XCTAssertTrue(models[2].reasoningEfforts.isEmpty)
+        XCTAssertNil(models[2].defaultReasoningEffort)
+    }
+
+    func testSelectedEffortReachesResponsesAndUnsupportedEffortIsOmitted() async throws {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [ChatGPTFixtureProtocol.self]
+        let store = MemoryChatGPTCredentials()
+        var record = store.load()
+        record.activeClientID = "oaiapp_fixture"
+        record.registrations = [.init(clientID: "oaiapp_fixture", subject: "fixture", email: nil,
+            tokens: .init(accessToken: "fake-access", expiresAt: .now.addingTimeInterval(3600), scope: ChatGPTAuth.scope))]
+        store.save(record)
+        let provider = ChatGPTProvider(store: store, http: ChatGPTHTTP(session: URLSession(configuration: configuration)))
+        ChatGPTFixtureProtocol.setAuth(["/v1/models": Data(#"{"models":[{"slug":"fixture","display_name":"Fixture","visibility":"list","supported_reasoning_levels":[{"effort":"low"},{"effort":"high"}]}]}"#.utf8)])
+        defer { ChatGPTFixtureProtocol.setAuth([:]) }
+        for effort: String? in ["low", "high", nil, "unsupported"] {
+            ChatGPTFixtureProtocol.prepare("event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n")
+            try await provider.connect()
+            await provider.configure(.init(reasoning: effort))
+            let events = await provider.events, done = expectation(description: "Effort request completed")
+            let task = Task {
+                for await event in events {
+                    if case .turnCompleted(_, let status, _) = event {
+                        XCTAssertEqual(status, .completed); done.fulfill(); return
+                    }
+                }
+            }
+            try await provider.startTurn(threadID: "local", prompt: "Fixture", projectPath: "/unused", model: "fixture")
+            // Later configuration changes must not mutate this in-flight request.
+            await provider.configure(.init(reasoning: "other"))
+            await fulfillment(of: [done], timeout: 5); task.cancel()
+            let request = try XCTUnwrap(ChatGPTFixtureProtocol.requests.last { $0.url?.path == "/v1/responses" })
+            let body = try JSONDecoder().decode(JSONValue.self, from: XCTUnwrap(request.httpBody))
+            if let effort, ["low", "high"].contains(effort) { XCTAssertEqual(body["reasoning"]?["effort"], .string(effort)) }
+            else { XCTAssertNil(body["reasoning"]) }
+            XCTAssertNil(body["service_tier"], "Thinking effort must not silently enable paid priority processing")
+            await provider.disconnect()
+        }
+    }
     @MainActor
     func testRealLoginButtonPathOpensBrowserWithoutAnExecutableAndCancellationClearsListener() async throws {
         let suite = "NativeAgentBrowserTests.\(UUID())", directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
@@ -376,6 +428,45 @@ final class ChatGPTBrowserTests: XCTestCase {
         await fulfillment(of: [unexpected], timeout: 0.1)
         observer.cancel()
         await provider.disconnect()
+    }
+
+    @MainActor
+    func testAIRenameFromViewModelUsesTargetChatAndFiveMessageMinimum() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let suite = "NativeAgentTitleFlow.\(UUID())"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [ChatGPTFixtureProtocol.self]
+        let store = MemoryChatGPTCredentials()
+        var record = store.load()
+        record.activeClientID = "oaiapp_fixture"
+        record.registrations = [.init(clientID: "oaiapp_fixture", subject: "fixture", email: nil,
+            tokens: .init(accessToken: "fake-access", expiresAt: .now.addingTimeInterval(3600), scope: ChatGPTAuth.scope))]
+        store.save(record)
+        let provider = ChatGPTProvider(store: store, http: ChatGPTHTTP(session: URLSession(configuration: configuration)))
+        let database = try DatabaseActor(url: directory.appendingPathComponent("titles.sqlite3"))
+        let model = WorkspaceViewModel(provider: provider, database: database, files: FileService(), git: GitService(), automaticallyRestore: false, preferences: defaults, credentials: MemoryCredentials(), chatGPTCredentials: store)
+        ChatGPTFixtureProtocol.prepare("data: {\"type\":\"response.completed\",\"response\":{\"output\":[{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"Planning a garden\"}]}]}}\n\n")
+        await model.connect()
+        for _ in 0..<30 { await Task.yield() }
+        XCTAssertNil(model.titleSuggestionUnavailableReason)
+        let chat = Conversation(title: "Original title"), visible = Conversation(title: "Unrelated chat")
+        try await database.save(conversation: chat)
+        model.selectedConversation = visible; model.timeline = []
+        for index in 1...4 { try await database.save(entry: .init(kind: .userMessage, title: "", text: "Garden plan \(index)"), conversationID: chat.id) }
+        do { _ = try await model.suggestConversationTitle(chat); XCTFail("Four user messages must not call AI") }
+        catch { XCTAssertTrue(error.localizedDescription.contains("4 of 5")) }
+        XCTAssertFalse(ChatGPTFixtureProtocol.requests.contains { $0.url?.path == "/v1/responses" })
+        try await database.save(entry: .init(kind: .userMessage, title: "", text: "Final garden plan"), conversationID: chat.id)
+        let title = try await model.suggestConversationTitle(chat)
+        XCTAssertEqual(title, "Planning a garden")
+        XCTAssertTrue(model.timeline.isEmpty)
+        XCTAssertEqual(model.selectedConversation?.id, visible.id)
+        let stored = try await database.conversation(id: chat.id)
+        XCTAssertEqual(stored?.title, "Original title", "AI suggestions require Save")
+        await model.shutdown()
     }
 
     func testNativeToolLoopRequiresApprovalAndPreservesStatelessHistory() async throws {

@@ -303,6 +303,60 @@ final class ConversationLifecycleTests: XCTestCase {
         XCTAssertEqual(model.draft, "Unsent")
     }
 
+    func testHistoryPagesForwardAfterEvictionAndStaysBoundedInBothDirections() async throws {
+        await model.newConversation()
+        let chat = try XCTUnwrap(model.selectedConversation)
+        for index in 1...360 {
+            try await database.save(entry: .init(kind: .userMessage, title: "You", text: "Message \(index)"), conversationID: chat.id)
+        }
+        await model.select(chat)
+        XCTAssertEqual(model.timeline.first?.receivedOrder, 321)
+        for _ in 0..<7 { await model.loadOlderMessages() }
+        XCTAssertEqual(model.timeline.count, 200)
+        XCTAssertEqual(model.timeline.first?.receivedOrder, 41)
+        XCTAssertEqual(model.timeline.last?.receivedOrder, 240)
+        model.draft = "Keep this draft"
+        for _ in 0..<3 {
+            let previousLast = try XCTUnwrap(model.timeline.last?.receivedOrder)
+            await model.loadNewerMessages()
+            XCTAssertLessThanOrEqual(model.timeline.count, 200)
+            XCTAssertEqual(model.timeline.last?.receivedOrder, previousLast + 40)
+            XCTAssertEqual(Set(model.timeline.map(\.id)).count, model.timeline.count)
+            XCTAssertEqual(model.timeline.compactMap(\.receivedOrder), model.timeline.compactMap(\.receivedOrder).sorted())
+        }
+        XCTAssertFalse(model.hasNewerMessages)
+        XCTAssertEqual(model.timeline.last?.receivedOrder, 360)
+        XCTAssertEqual(model.draft, "Keep this draft")
+        await model.refreshConversationSummaries()
+        XCTAssertEqual(model.promptBookmarks.count, 200)
+        let unrelated = Conversation()
+        try await database.save(conversation: unrelated)
+        await model.select(unrelated)
+        await model.loadNewerMessages()
+        XCTAssertTrue(model.timeline.isEmpty)
+        XCTAssertFalse(model.historyLoading)
+    }
+
+    func testRestoreOpensNewestPageInsteadOfFetchingOldReadingPosition() async throws {
+        let chat = Conversation(title: "Restored long chat")
+        try await database.save(conversation: chat)
+        var oldest: UUID?
+        for index in 1...100 {
+            let entry = TimelineEntry(kind: .userMessage, title: "You", text: "Message \(index)")
+            if index == 1 { oldest = entry.id }
+            try await database.save(entry: entry, conversationID: chat.id)
+        }
+        try await database.saveFeature(SessionState(conversationID: chat.id, readingPosition: oldest), kind: "session", id: "workspace")
+        model.settings.automaticallyConnect = false
+        await model.restore()
+        XCTAssertEqual(model.selectedConversation?.id, chat.id)
+        XCTAssertEqual(model.timeline.count, 40)
+        XCTAssertEqual(model.timeline.first?.receivedOrder, 61)
+        XCTAssertEqual(model.timeline.last?.receivedOrder, 100)
+        XCTAssertNil(model.navigationTarget)
+        await model.shutdown()
+    }
+
     func testHandoffIsBoundedAndDoesNotCopyCommandsOrErrors() {
         var history = (1...100).map { TimelineEntry(kind: .userMessage, title: "You", text: "Entry \($0): " + String(repeating: "x", count: 4_000)) }
         history += [.init(kind: .command, title: "Terminal", text: "secret-command-output"), .init(kind: .error, title: "Error", text: "private-runtime-error")]

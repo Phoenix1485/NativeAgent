@@ -76,6 +76,8 @@ final class WorkspaceViewModel: ObservableObject {
     @Published var hasOlderMessages = false
     @Published var hasNewerMessages = false
     @Published var historyLoading = false
+    @Published private(set) var historyLoadDirection: HistoryPageDirection?
+    @Published private(set) var historyLoadError: String?
     @Published var inspectorVisible = false
     let settings: AppPreferences
     lazy var features = WorkspaceFeaturesController(model: self, database: database, defaults: preferences)
@@ -115,9 +117,10 @@ final class WorkspaceViewModel: ObservableObject {
     private var persistenceTask: Task<Void, Never>?
     private var memoryPreparationTask: Task<String, Error>?
     private var creationTail: Task<Void, Never>?
+    private var startupConnectionAttempted = false
     private var lastStreamSave = Date.distantPast
     private var workspaceLoadedID: UUID?
-    private var modelSwitching = false
+    @Published private(set) var modelSwitching = false
     private var draftLoaded = true
     private var archivingIDs: Set<UUID> = []
     private let openBrowser: @MainActor (URL) -> Bool
@@ -148,6 +151,7 @@ final class WorkspaceViewModel: ObservableObject {
     deinit { eventTask?.cancel(); streamFlushTask?.cancel(); draftSaveTask?.cancel(); maintenanceTask?.cancel() }
 
     func shutdown() async {
+        startupConnectionAttempted = true
         await features.shutdown()
         accountOperation = UUID(); providerGeneration = UUID(); eventTask?.cancel()
         draftSaveTask?.cancel(); maintenanceTask?.cancel()
@@ -171,7 +175,8 @@ final class WorkspaceViewModel: ObservableObject {
     var selectedReasoning: String {
         get { settings.reasoning(for: selectedProviderModel, provider: settings.provider) ?? "" }
         set {
-            guard let id = selectedModelID else { return }
+            guard let id = selectedModelID,
+                  newValue.isEmpty || selectedProviderModel?.reasoningEfforts.contains(newValue) == true else { return }
             settings.update(settings.provider) { $0.reasoning[id] = newValue.isEmpty ? nil : newValue }
         }
     }
@@ -193,7 +198,7 @@ final class WorkspaceViewModel: ObservableObject {
 
     func useProvider(_ kind: ProviderKind) async {
         guard !isWorking, !accountActionInProgress, connectionStatus != .connecting, settings.provider != kind else { return }
-        await disconnect()
+        await disconnect(preventStartupReconnect: false)
         settings.provider = kind
         providerInspection = nil
         accountNotice = nil
@@ -463,8 +468,14 @@ final class WorkspaceViewModel: ObservableObject {
         guard directChatGPT, provider is ChatGPTProvider else { return "Connect ChatGPT to suggest a name with AI." }
         guard case .ready = connectionStatus, !accountActionInProgress else { return "Connect ChatGPT to suggest a name with AI." }
         guard !isWorking else { return "Wait for the current reply to finish." }
+        guard !modelSwitching else { return "Wait for the model switch to finish." }
         guard let selectedModelID, availableModels.contains(where: { $0.id == selectedModelID }) else { return "Choose a ChatGPT model first." }
         return nil
+    }
+
+    func titleUserMessageCount(_ conversationID: UUID) async throws -> Int {
+        await persistenceTask?.value
+        return try await database.titleContext(conversationID: conversationID).userMessageCount
     }
 
     func suggestConversationTitle(_ conversation: Conversation) async throws -> String {
@@ -486,7 +497,8 @@ final class WorkspaceViewModel: ObservableObject {
         draft = ""
         timeline = []
         selectedProject = project(for: id)
-        draftLoaded = true; historyLoading = false; hasOlderMessages = false; hasNewerMessages = false
+        draftLoaded = true; historyLoading = false; historyLoadDirection = nil; historyLoadError = nil
+        hasOlderMessages = false; hasNewerMessages = false
         if let previous { try? await database.saveDraft(previousDraft, conversationID: previous.id) }
         guard selectionVersion == version else { return }
         await loadChats(in: id)
@@ -605,7 +617,8 @@ final class WorkspaceViewModel: ObservableObject {
         selectedProject = projects.first { $0.id == conversation.projectID } ?? project(for: conversation.groupID)
         timeline = []
         draft = ""
-        draftLoaded = false; historyLoading = true; hasOlderMessages = false; hasNewerMessages = false
+        draftLoaded = false; historyLoading = true; historyLoadDirection = nil; historyLoadError = nil
+        hasOlderMessages = false; hasNewerMessages = false
         do {
             if let previous { try await database.saveDraft(previousDraft, conversationID: previous.id) }
             await persistenceTask?.value
@@ -624,14 +637,14 @@ final class WorkspaceViewModel: ObservableObject {
             guard selectionVersion == version else { return }
             await loadWorkspace()
             await features.selectionChanged()
-        } catch { if selectionVersion == version { historyLoading = false; show(error) } }
+        } catch { if selectionVersion == version { historyLoading = false; historyLoadError = error.localizedDescription; show(error) } }
     }
 
     func loadOlderMessages() async {
         guard !historyLoading, hasOlderMessages, let chat = selectedConversation, let first = timeline.first else { return }
         let version = selectionVersion
-        historyLoading = true
-        defer { if selectionVersion == version { historyLoading = false } }
+        historyLoading = true; historyLoadDirection = .older; historyLoadError = nil
+        defer { if selectionVersion == version { historyLoading = false; historyLoadDirection = nil } }
         do {
             await persistenceTask?.value
             let savedOrder = try await database.timelineOrder(id: first.id)
@@ -641,13 +654,35 @@ final class WorkspaceViewModel: ObservableObject {
             timeline.insert(contentsOf: page, at: 0)
             hasOlderMessages = (page.first?.receivedOrder ?? 1) > 1
             if timeline.count > 200 { timeline = Array(timeline.prefix(200)); hasNewerMessages = true }
-        } catch { show(error) }
+        } catch { if selectionVersion == version { historyLoadError = error.localizedDescription; show(error) } }
+    }
+
+    func loadNewerMessages() async {
+        guard !historyLoading, hasNewerMessages, let chat = selectedConversation, let last = timeline.last else { return }
+        let version = selectionVersion
+        historyLoading = true; historyLoadDirection = .newer; historyLoadError = nil
+        defer { if selectionVersion == version { historyLoading = false; historyLoadDirection = nil } }
+        do {
+            await persistenceTask?.value
+            let savedOrder = try await database.timelineOrder(id: last.id)
+            guard let order = last.receivedOrder ?? savedOrder else { return }
+            let page = try await database.timeline(conversationID: chat.id, limit: 41, afterOrder: order, previewCharacters: 8_000)
+            guard selectionVersion == version else { return }
+            let known = Set(timeline.map(\.id))
+            timeline.append(contentsOf: page.prefix(40).filter { !known.contains($0.id) })
+            hasNewerMessages = page.count > 40
+            if !hasNewerMessages, activeConversationID == chat.id, let streamingEntry {
+                if let index = timeline.firstIndex(where: { $0.id == streamingEntry.id }) { timeline[index] = displayEntry(streamingEntry) }
+                else { timeline.append(displayEntry(streamingEntry)) }
+            }
+            trimLiveTimeline()
+        } catch { if selectionVersion == version { historyLoadError = error.localizedDescription; show(error) } }
     }
 
     func loadLatestMessages() async {
         guard let chat = selectedConversation, !historyLoading else { return }
-        let version = selectionVersion; historyLoading = true
-        defer { if selectionVersion == version { historyLoading = false } }
+        let version = selectionVersion; historyLoading = true; historyLoadDirection = nil; historyLoadError = nil
+        defer { if selectionVersion == version { historyLoading = false; historyLoadDirection = nil } }
         do {
             await persistenceTask?.value
             let entries = try await database.timeline(conversationID: chat.id, limit: 40, previewCharacters: 8_000)
@@ -661,7 +696,7 @@ final class WorkspaceViewModel: ObservableObject {
                 if let index = timeline.firstIndex(where: { $0.id == streamingEntry.id }) { timeline[index] = displayEntry(streamingEntry) }
                 else { timeline.append(displayEntry(streamingEntry)) }
             }
-        } catch { show(error) }
+        } catch { if selectionVersion == version { historyLoadError = error.localizedDescription; show(error) } }
     }
 
     func fullMessageText(_ id: UUID) async -> String? {
@@ -702,7 +737,7 @@ final class WorkspaceViewModel: ObservableObject {
         let version = selectionVersion
         await persistenceTask?.value
         do {
-            let prompts = includePrompts ? try await database.promptBookmarks(conversationID: chat.id) : nil
+            let prompts = includePrompts ? try await database.promptBookmarks(conversationID: chat.id, limit: 200) : nil
             let details = try await database.timeline(conversationID: chat.id, limit: 200, previewCharacters: 600, detailsOnly: true)
             guard selectedConversation?.id == chat.id, selectionVersion == version else { return }
             if let prompts { promptBookmarks = prompts }
@@ -803,8 +838,9 @@ final class WorkspaceViewModel: ObservableObject {
         }
     }
 
-    func disconnect() async {
+    func disconnect(preventStartupReconnect: Bool = true) async {
         guard !isWorking else { return }
+        if preventStartupReconnect { startupConnectionAttempted = true }
         accountOperation = UUID(); browserLoginPending = false; accountActionInProgress = false
         providerAccount = nil; usageWindows = []; approvals = []
         if !injectedProvider { eventTask?.cancel(); providerGeneration = UUID() }
@@ -1141,6 +1177,25 @@ final class WorkspaceViewModel: ObservableObject {
                 }
             }
         } catch { show(error) }
+        await reconnectOnLaunch()
+    }
+
+    /// One attempt using existing authorization only. Never starts sign-in or sends a prompt.
+    func reconnectOnLaunch() async {
+        guard !startupConnectionAttempted else { return }
+        startupConnectionAttempted = true
+        guard settings.automaticallyConnect, database.startupRestoreNotice == nil,
+              connectionStatus == .disconnected, !isWorking, !accountActionInProgress else { return }
+        do {
+            if directChatGPT {
+                guard try chatGPTCredentials.load().active?.tokens != nil else { return }
+            } else if settings.profile(settings.provider).method == .apiKey {
+                guard try credentials.contains(settings.provider) else { return }
+            } else {
+                guard settings.profile(settings.provider).verifiedAt != nil else { return }
+            }
+            await connect()
+        } catch { accountNotice = "Automatic connection needs attention: \(error.localizedDescription)" }
     }
 
     private func automaticBackup() async {

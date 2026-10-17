@@ -334,6 +334,10 @@ struct SettingsHub: View {
 
     private var configuration: some View {
         Group {
+            card {
+                Toggle("Connect automatically when the app opens", isOn: $settings.automaticallyConnect)
+                Text("Reuses your selected account’s saved authorization once per launch. No browser sign-in, messages, or interrupted tasks start automatically. Disconnect keeps you offline for the rest of this session.").font(.system(size: 11)).foregroundStyle(.secondary)
+            }
             card { BackupSettingsView(model: model) }
             providerSelector
             if direct {
@@ -346,7 +350,7 @@ struct SettingsHub: View {
                 sectionLabel("PROVIDER RUNTIME")
                 TextField("Automatic detection", text: Binding(get: { profile.binaryPath }, set: { value in settings.update(kind) { $0.binaryPath = value } })).textFieldStyle(.roundedBorder).font(.system(size: 11, design: .monospaced)).disabled(busy)
                 HStack { Text(runtimePath ?? "No executable found").font(.system(size: 10, design: .monospaced)).foregroundStyle(.secondary).lineLimit(2).textSelection(.enabled); Spacer(); Button("Choose…") { chooseBinary() }.disabled(busy) }
-                Text("Changes apply on the next connection. No provider starts at app launch. Signing in or connecting starts only the chosen command-line runtime.").font(.system(size: 11)).foregroundStyle(.secondary)
+                Text("Changes apply on the next connection. Automatic connection can start the selected runtime when saved authorization is available.").font(.system(size: 11)).foregroundStyle(.secondary)
             }
             }
             card {
