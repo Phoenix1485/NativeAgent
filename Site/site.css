@@ -91,14 +91,15 @@ figcaption a { color: #c8c3d4; white-space: nowrap; }
 .connection-heading h2 { font-size: clamp(32px, 3.8vw, 46px); }
 .connection-heading h2 span { color: #a29bae; }
 .connection-heading>p { max-width: 380px; margin: 0 0 3px; font-size: 14px; line-height: 1.8; color: var(--muted); }
-.connection-grid { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); list-style: none; padding: 0; margin: 0; gap: 12px; }
-.connection-card { --connection-color: #c7bbeb; position: relative; display: flex; flex-direction: column; align-items: flex-start; min-height: 220px; height: 100%; padding: 25px 20px 22px; border: 1px solid #ffffff13; border-radius: 16px; background: linear-gradient(150deg, #1a191f, #111114); transition: transform .2s, border-color .2s, background .2s; }
-.connection-card:hover { transform: translateY(-5px); border-color: var(--connection-color); background: linear-gradient(150deg, #23202b, #151419); color: var(--text); }
-.connection-card>svg { width: 34px; height: 34px; color: var(--connection-color); margin-bottom: 26px; }
-.connection-name { font-size: 16px; font-weight: 550; letter-spacing: -.35px; }
-.connection-method { font: 9px/1.65 var(--mono); color: var(--connection-color); margin-top: 9px; }
-.connection-detail { color: #a5a0b0; font-size: 11px; line-height: 1.7; margin-top: 6px; }
-.connection-arrow { position: absolute; top: 20px; right: 18px; font-size: 14px; color: #797380; }
+.connection-grid { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); list-style: none; padding: 0; margin: 0; gap: 1px; border: 1px solid #ffffff18; border-radius: 16px; overflow: hidden; background: #ffffff18; }
+.connection-card { --connection-color: #c7bbeb; position: relative; display: grid; grid-template-columns: 28px minmax(0, 1fr); align-content: center; column-gap: 12px; row-gap: 6px; min-height: 148px; height: 100%; padding: 26px 18px 22px; background: linear-gradient(150deg, #19181e, #121215); transition: background .2s; }
+.connection-card:hover { background: linear-gradient(150deg, #25212e, #19171f); color: var(--text); }
+.connection-card:focus-visible { outline: 2px solid var(--accent); outline-offset: -4px; }
+.connection-card>svg { width: 28px; height: 28px; color: var(--connection-color); grid-row: 1 / span 2; align-self: center; }
+.connection-name { grid-column: 2; font-size: 15px; font-weight: 550; letter-spacing: -.35px; }
+.connection-method { grid-column: 2; font: 9px/1.65 var(--mono); color: var(--connection-color); }
+.connection-detail { grid-column: 1 / -1; color: #a5a0b0; font-size: 11px; line-height: 1.7; margin-top: 9px; }
+.connection-arrow { position: absolute; top: 10px; right: 12px; font-size: 12px; color: #797380; }
 .connection-chat { --connection-color: #add7c8; }
 .connection-claude { --connection-color: #dbaa91; }
 .connection-grok { --connection-color: #d6d1e1; }
@@ -206,7 +207,7 @@ footer nav { gap: 20px; font-size: 11px; }
   .connection-grid { grid-template-columns: repeat(6, minmax(0, 1fr)); }
   .connection-grid li { grid-column: span 2; }
   .connection-grid li:nth-last-child(-n+2) { grid-column: span 3; }
-  .connection-card { min-height: 190px; }
+  .connection-card { min-height: 144px; }
   .connection-footer { align-items: flex-start; }
   .github-feature { padding: 30px; gap: 30px; }
   .branch { width: 100%; margin-left: 24px; }
@@ -247,12 +248,11 @@ footer nav { gap: 20px; font-size: 11px; }
   .providers { padding-block: 64px 48px; }
   .connection-heading { display: block; margin-bottom: 28px; }
   .connection-heading>p { max-width: 450px; margin-top: 22px; }
-  .connection-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+  .connection-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .connection-grid li, .connection-grid li:nth-last-child(-n+2) { grid-column: span 1; }
   .connection-grid li:last-child { grid-column: 1 / -1; }
-  .connection-card { min-height: 198px; padding: 21px 16px; }
-  .connection-card>svg { margin-bottom: 22px; }
-  .connection-grid li:last-child .connection-card { min-height: 178px; }
+  .connection-card { min-height: 148px; padding: 24px 14px 20px; column-gap: 10px; }
+  .connection-grid li:last-child .connection-card { min-height: 128px; }
   .connection-footer { flex-direction: column; gap: 15px; }
   .connection-footer ul { gap: 13px; flex-direction: column; }
   .section { padding-block: 62px; }
