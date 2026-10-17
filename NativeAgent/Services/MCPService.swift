@@ -191,6 +191,7 @@ struct PreparedNativeTool: Sendable {
     let title: String
     let review: String
     var changedPath: String? = nil
+    var requiresApproval = true
     let execute: @Sendable () async throws -> String
 }
 

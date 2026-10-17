@@ -65,6 +65,16 @@ Type `@` at the end of the draft, or click **@** above the text editor. Select o
 
 ChatGPT accounts use NativeAgent’s existing browser authorization. Grok account sign-in uses the installed official Grok Build runtime; reviews require its advertised read-only plan mode and a trusted chosen folder, which the runtime may read. Runtime permission requests are denied during review. Claude subscription sign-in remains in unmodified Claude Code and its Terminal conversation; it is **not** a Claude.ai OAuth integration in NativeAgent’s shared chat. Add a Claude API connection for Claude replies alongside the other AIs. See [provider compatibility](Docs/ProviderCompatibility.md) for sources and limitations.
 
+## Agents
+
+**Settings → Agents** includes ChatGPT, Claude, Grok, Planner, Code reviewer and Writer presets. These are editable NativeAgent specialists, not imported GPTs or Claude projects. Create or duplicate an agent, choose its saved account/API connection and optional model override, then configure its instructions, response style, reference text and context-sharing preferences. Claude agents require a Claude API connection; the separate Claude Code Terminal session is not used. Grok runtime agents additionally require explicit project-read permission and a trusted folder.
+
+Use **@ → Agents** or type `@handle` in a prompt. A checked chip confirms an accepted, connected agent; unavailable agents show a setup message and block sending. Mentions persist with the draft and can be removed using their chips. Up to six agents/AIs can answer a request, with separately labeled replies and at most two concurrent requests. Reference files are imported as text snapshots, not continuously watched files. Agent profiles can be exported/imported as JSON without credentials; imports start disabled and mention-only. Profiles are separate from chat backups.
+
+The main direct ChatGPT assistant can also call configured agents through its `delegate_agent` tool. Each profile supports **Mention only**, **Ask before delegating** (default), or **Automatic**. The global switch and per-turn limit (1–6, default 3) control delegation. Automatic mode authorizes sending model-selected tasks to that agent without another approval; tasks can contain context supplied by the main assistant even when automatic history/attachment sharing is off. Calls appear in tool activity and provider-reported tokens are recorded under the agent handle in Usage. Other tools retain their existing approvals.
+
+Specialists return text advice using the selected connection. They do not independently edit files, run shell/MCP tools, or delegate recursively. Automatic delegation is available only in direct ChatGPT turns; other supported connections can answer explicit mentions. API charges remain separate, and stopping a request cannot undo work already accepted by a provider.
+
 ## Token usage and context
 
 **Settings → Usage** shows locally recorded tokens for today, the past 7, 30 or 90 calendar days, all time, or a custom date range. Filter by provider and model, inspect daily input/output charts and provider/model/chat/activity breakdowns, page through recent requests, or export the filtered history as CSV. The dashboard uses your selected accent color.

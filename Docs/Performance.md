@@ -34,6 +34,8 @@ Date: 2026-10-11
 | Usage history | 25 rows/page, at most 500 visible; CSV streams 500 rows/page |
 | Usage summaries | SQL aggregation; at most 3,660 daily points and 100 entries per breakdown; totals cover the full query |
 | Usage refresh | Coalesced while Settings → Usage is visible; no background dashboard reads |
+| Agents | At most 50 profiles; 80 KB reference text and 180 KB combined input per specialist; six explicit recipients, two concurrent requests |
+| Automatic delegation | 1–6 calls per main ChatGPT turn (default 3); specialist requests cannot delegate recursively |
 | Retained diagnostic messages | 100 |
 | Active P0 provider processes | 1 |
 | Explicit context | 24 items / 1 MiB copied text total |

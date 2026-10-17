@@ -4,6 +4,7 @@ struct ComposerActionsView: View {
     @EnvironmentObject private var model: WorkspaceViewModel
     var dismiss: () -> Void
     var query: String
+    @Binding var agentsOnly: Bool
     var highlightedID: String? = nil
     private var matches: [AIRecipient] {
         model.aiRecipients.filter { query.isEmpty || ($0.name + " " + $0.model).localizedCaseInsensitiveContains(query) }
@@ -18,15 +19,39 @@ struct ComposerActionsView: View {
                 Spacer()
                 Button { dismiss() } label: { Image(systemName: "xmark") }.accessibilityLabel("Close actions")
             }.padding(8)
-            if query.isEmpty || "attach files".localizedCaseInsensitiveContains(query) {
+            if !agentsOnly && (query.isEmpty || "attach files".localizedCaseInsensitiveContains(query)) {
                 action("Attach files", detail: "Add text or code context", icon: "paperclip") { dismiss(); Task { await model.features.chooseAttachments() } }
             }
-            if query.isEmpty || "plan mode".localizedCaseInsensitiveContains(query) {
+            if !agentsOnly && (query.isEmpty || "plan mode".localizedCaseInsensitiveContains(query)) {
                 action("Plan mode", detail: "Read-only work; no approved edits", icon: "list.bullet.clipboard") { model.settings.access = .readOnly; dismiss() }
             }
-            if query.isEmpty || "prompt templates".localizedCaseInsensitiveContains(query) {
+            if !agentsOnly && (query.isEmpty || "prompt templates".localizedCaseInsensitiveContains(query)) {
                 action("Prompt templates", detail: "Start with a saved instruction", icon: "text.badge.plus") { dismiss(); model.features.execute(.templates) }
             }
+            Divider().padding(.vertical, 5)
+            HStack {
+                Button { agentsOnly.toggle() } label: { Label(agentsOnly ? "Agents · show all actions" : "Agents", systemImage: "person.2.badge.gearshape") }
+                Spacer()
+                Button("Manage…") { dismiss(); model.showAgents = true }.font(.caption)
+            }.padding(8).foregroundStyle(Studio.accent)
+            ForEach(model.agentMatches(query)) { profile in
+                Button {
+                    model.acceptAgent(profile); dismiss()
+                } label: {
+                    HStack(spacing: 10) {
+                        Image(systemName: model.mentionedAgents.contains(where: { $0.id == profile.id }) ? "checkmark.circle.fill" : "person.crop.circle").foregroundStyle(Studio.accent)
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(profile.name + " · @" + profile.handle).font(.system(size: 13, weight: .medium)).lineLimit(1)
+                            Text(profile.recipient(from: model.aiRecipients) == nil ? "Needs setup in Settings → Agents" : profile.summary).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                        }
+                        Spacer()
+                    }.padding(10).contentShape(Rectangle())
+                        .background(Studio.hover.opacity(0.35), in: RoundedRectangle(cornerRadius: 10))
+                        .overlay(RoundedRectangle(cornerRadius: 10).stroke(highlightedID == profile.recipientID ? Studio.accent.opacity(0.5) : .clear))
+                }.buttonStyle(.plain).id(profile.recipientID)
+            }
+            if model.agentMatches(query).isEmpty { Text("No matching agent. Create one in Settings → Agents.").font(.caption).foregroundStyle(.secondary).padding(8) }
+            if !agentsOnly {
             Divider().padding(.vertical, 5)
             HStack {
                 Text("ASK YOUR AIs").font(.system(size: 10, weight: .semibold)).tracking(1.5).foregroundStyle(.secondary)
@@ -53,7 +78,8 @@ struct ComposerActionsView: View {
                     }
                     if matches.isEmpty { Text("No matching AI. Add an API connection or connect a supported account.").font(.caption).foregroundStyle(.secondary).padding(10) }
                 }
-            Text("Select one for a reply, or several for independent reviews. Separate usage charges may apply.").font(.caption).foregroundStyle(.secondary).padding(8)
+            }
+            Text("Choose agents for this prompt. Checked chips confirm accepted mentions. Separate API charges may apply.").font(.caption).foregroundStyle(.secondary).padding(8)
         }.padding(10).frame(maxWidth: .infinity)
         }.onChange(of: highlightedID) { if let highlightedID { proxy.scrollTo(highlightedID) } }
         }

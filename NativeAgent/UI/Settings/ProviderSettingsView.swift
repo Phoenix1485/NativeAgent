@@ -2,13 +2,14 @@ import AppKit
 import SwiftUI
 
 enum SettingsPage: String, CaseIterable, Identifiable {
-    case accounts = "Accounts", apiConnections = "API connections", github = "GitHub", models = "Models", usage = "Usage", plugins = "Plugins", configuration = "Configuration", storage = "Storage", appearance = "Appearance", updates = "Updates"
+    case accounts = "Accounts", apiConnections = "API connections", github = "GitHub", agents = "Agents", models = "Models", usage = "Usage", plugins = "Plugins", configuration = "Configuration", storage = "Storage", appearance = "Appearance", updates = "Updates"
     var id: String { rawValue }
-    var icon: String { switch self { case .accounts: "person.crop.circle"; case .apiConnections: "key.horizontal"; case .github: "point.3.connected.trianglepath.dotted"; case .models: "sparkles"; case .usage: "chart.bar.xaxis"; case .plugins: "puzzlepiece.extension"; case .configuration: "slider.horizontal.3"; case .storage: "externaldrive"; case .appearance: "paintpalette"; case .updates: "arrow.triangle.2.circlepath" } }
+    var icon: String { switch self { case .accounts: "person.crop.circle"; case .apiConnections: "key.horizontal"; case .github: "point.3.connected.trianglepath.dotted"; case .agents: "person.2.badge.gearshape"; case .models: "sparkles"; case .usage: "chart.bar.xaxis"; case .plugins: "puzzlepiece.extension"; case .configuration: "slider.horizontal.3"; case .storage: "externaldrive"; case .appearance: "paintpalette"; case .updates: "arrow.triangle.2.circlepath" } }
     var subtitle: String { switch self {
     case .accounts: "Your accounts. Your choice of intelligence."
     case .apiConnections: "Up to ten API tokens. One shared conversation."
     case .github: "Connect GitHub and manage your repositories."
+    case .agents: "Your specialists. Your instructions. Your choice of AI."
     case .models: "Keep the models you love. Hide the rest."
     case .usage: "Explore your local token history and provider-reported context."
     case .plugins: "Trusted tools and data sources through MCP."
@@ -63,6 +64,7 @@ struct SettingsHub: View {
                         case .accounts: accounts
                         case .apiConnections: AIConnectionsView()
                         case .github: GitHubAccountView(controller: model.github).task { await model.github.refreshAuth() }; Button("Open GitHub workspace") { model.features.execute(.github) }
+                        case .agents: AgentsSettingsView(model: model, store: model.agents)
                         case .models: models
                         case .usage: UsageSettingsView(controller: model.usage, selectedConversation: model.selectedConversation, quotaWindows: model.usageWindows)
                         case .plugins: MCPSettingsView(manager: model.features.mcp)

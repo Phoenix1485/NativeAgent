@@ -21,6 +21,7 @@ struct ConversationView: View {
     @State private var showPlugins = false
     @State private var showComposerActions = false
     @State private var mentionIndex = 0
+    @State private var agentsOnly = false
     @State private var composerTop: CGFloat = 400
     @State private var messageFrames: [UUID: CGRect] = [:]
     @State private var pagingIntent = HistoryPagingIntent()
@@ -82,10 +83,18 @@ struct ConversationView: View {
                     ScrollView { AIConnectionsView() }
                 }.padding(24).frame(width: 680, height: 600)
             }
+            .sheet(isPresented: $model.showAgents) {
+                VStack(alignment: .leading, spacing: 16) {
+                    HStack { Text("Agents").font(.title2.weight(.semibold)); Spacer(); Button("Done") { model.showAgents = false } }
+                    ScrollView { AgentsSettingsView(model: model, store: model.agents) }
+                }.padding(24).frame(width: 740, height: 700).background(Studio.canvas)
+                    .tint(model.settings.accent.color).accentColor(model.settings.accent.color)
+            }
             .onChange(of: model.draft, initial: true) {
                 let showing = ComposerMention.query(in: model.draft) != nil
                 if showing && !showComposerActions { model.refreshSavedKeys() }
                 showComposerActions = showing; mentionIndex = 0
+                if ComposerMention.query(in: model.draft)?.lowercased() == "agents" { agentsOnly = true }
             }
             .onChange(of: model.selectedConversation?.id) { showComposerActions = false }
             .onChange(of: model.selectedConversation?.id) { pagingIntent.reset(); messageFrames = [:]; paging = false; pagingRequest = UUID(); atBottom = true; visiblePromptID = nil }
@@ -272,10 +281,10 @@ struct ConversationView: View {
         VStack(alignment: .leading, spacing: 0) {
             ScrollView(.horizontal) {
             HStack(spacing: 12) {
-                Button { showComposerActions.toggle(); model.refreshSavedKeys() } label: { Image(systemName: "at") }
-                    .help("Choose AIs and quick actions").accessibilityLabel("Choose AIs and quick actions").disabled(model.isWorking)
+                Button { agentsOnly = false; showComposerActions.toggle(); model.refreshSavedKeys() } label: { Image(systemName: "at") }
+                    .help("Choose agents, AIs and quick actions").accessibilityLabel("Choose agents, AIs and quick actions").disabled(model.isWorking)
                 Button { Task { await model.features.chooseAttachments() } } label: { Label("Attach", systemImage: "paperclip") }
-                    .disabled(model.features.importingFiles || model.isWorking || (model.settings.provider == .claude && model.selectedAIRecipients.isEmpty))
+                    .disabled(model.features.importingFiles || model.isWorking || (model.settings.provider == .claude && !model.usesRecipientChat))
                     .help("Attach UTF-8 text and code files, or drop them here")
                 Button("Plugins") { showPlugins = true }
                 Button("Templates") { model.features.execute(.templates) }
@@ -286,6 +295,27 @@ struct ConversationView: View {
             }.font(.caption).buttonStyle(.plain).foregroundStyle(.secondary).fixedSize(horizontal: true, vertical: false)
             }.frame(height: 28).padding(.horizontal, 18).padding(.top, 8)
             AttachmentStrip(features: model.features)
+            if model.hasAgentMentions {
+                ScrollView(.horizontal) {
+                    HStack(spacing: 8) {
+                        ForEach(model.mentionedAgents) { profile in
+                            AgentMentionChip(profile: profile, recipient: profile.recipient(from: model.aiRecipients),
+                                working: model.isWorking, remove: { model.removeAgentMention(profile.id) })
+                        }
+                    }
+                }.padding(.horizontal, 18).padding(.top, 10)
+            }
+            if let issue = model.agentSelectionIssue {
+                HStack { Text(issue).font(.caption).foregroundStyle(.orange); Button("Agents…") { model.showAgents = true } }
+                    .padding(.horizontal, 18).padding(.top, 6)
+            }
+            if model.agents.automaticEnabled && !model.usesRecipientChat && model.directChatGPT {
+                HStack(spacing: 6) {
+                    Image(systemName: "person.2.badge.gearshape")
+                    Text("Agent delegation enabled · up to \(model.agents.callLimit) calls")
+                    Button("Configure") { model.showAgents = true }
+                }.font(.system(size: 10)).foregroundStyle(.secondary).padding(.horizontal, 18).padding(.top, 8)
+            }
             if !model.selectedAIRecipients.isEmpty {
                 HStack(alignment: .top) {
                     Image(systemName: "person.2.wave.2").foregroundStyle(Studio.accent)
@@ -308,7 +338,7 @@ struct ConversationView: View {
                     Button { model.features.notice = nil } label: { Image(systemName: "xmark") }.accessibilityLabel("Dismiss attachment notice")
                 }.padding(12)
             }
-            if model.settings.provider == .claude && model.selectedAIRecipients.isEmpty {
+            if model.settings.provider == .claude && !model.usesRecipientChat {
                 VStack(alignment: .leading, spacing: 10) {
                     Label("Official Claude Code terminal", systemImage: "terminal").font(.headline)
                     Text("Claude Code handles its models, conversation history, permissions and interruption in Terminal. This native chat’s draft and history stay here.").font(.caption).foregroundStyle(.secondary)
@@ -326,13 +356,8 @@ struct ConversationView: View {
                     .onKeyPress(.escape) { if showComposerActions { closeComposerActions(); return .handled }; return .ignored }
                     .onKeyPress(.downArrow) { moveMentionSelection(1) }
                     .onKeyPress(.upArrow) { moveMentionSelection(-1) }
-                    .onKeyPress(.return) {
-                        guard showComposerActions, !mentionMatches.isEmpty else { return .ignored }
-                        let id = mentionMatches[min(mentionIndex, mentionMatches.count - 1)].id
-                        if model.selectedAIRecipients.contains(id) { model.selectedAIRecipients.remove(id) }
-                        else { model.selectedAIRecipients.insert(id) }
-                        closeComposerActions(); return .handled
-                    }
+                    .onKeyPress(.return) { acceptMentionSelection() }
+                    .onKeyPress(.tab) { acceptMentionSelection() }
             }.padding(.horizontal, 15).padding(.top, 12)
             HStack(spacing: 10) {
                 Button { model.openProject() } label: {
@@ -344,8 +369,8 @@ struct ConversationView: View {
                         .background(Studio.hover.opacity(0.65), in: Capsule())
                 }.buttonStyle(.plain).disabled(model.selectedConversation?.remoteThreadID != nil).help(model.selectedProject?.canonicalPath ?? "Choose the working folder for this chat")
                 Spacer(minLength: 0)
-                if model.selectedAIRecipients.isEmpty { ChatModelPicker() }
-                else { Button("\(model.selectedAIRecipients.count) AI\(model.selectedAIRecipients.count == 1 ? "" : "s") ▾") { showComposerActions.toggle() }.font(.caption).disabled(model.isWorking) }
+                if !model.usesRecipientChat { ChatModelPicker() }
+                else { Button("\(model.selectedRequestRecipients.count) selected ▾") { showComposerActions.toggle() }.font(.caption).disabled(model.isWorking) }
                 if model.isWorking {
                     Button { Task { await model.stop() } } label: { Image(systemName: "stop.fill").frame(width: 31, height: 31) }.buttonStyle(.plain).foregroundStyle(Studio.accent).help("Stop turn")
                 } else {
@@ -373,7 +398,7 @@ struct ConversationView: View {
             })
             .overlay(alignment: .top) {
                 if showComposerActions && !model.isWorking {
-                    ComposerActionsView(dismiss: closeComposerActions, query: ComposerMention.query(in: model.draft) ?? "", highlightedID: mentionMatches.indices.contains(mentionIndex) ? mentionMatches[mentionIndex].id : nil)
+                    ComposerActionsView(dismiss: closeComposerActions, query: ComposerMention.query(in: model.draft) ?? "", agentsOnly: $agentsOnly, highlightedID: mentionMatches.indices.contains(mentionIndex) ? mentionMatches[mentionIndex] : nil)
                         .frame(height: mentionMenuHeight)
                         .offset(y: -mentionMenuHeight - 8)
                 }
@@ -381,14 +406,28 @@ struct ConversationView: View {
     }
 
     private func closeComposerActions() {
-        model.draft = ComposerMention.removingToken(from: model.draft)
+        if let range = ComposerMention.range(in: model.draft),
+           AgentMention.matches(in: model.draft, profiles: model.agents.profiles).contains(where: { $0.range == NSRange(range, in: model.draft) }) {
+            model.draft += " "
+        } else { model.draft = ComposerMention.removingToken(from: model.draft) }
         showComposerActions = false
         composerFocused = true
     }
 
-    private var mentionMatches: [AIRecipient] {
+    private func acceptMentionSelection() -> KeyPress.Result {
+        guard showComposerActions, !mentionMatches.isEmpty else { return .ignored }
+        let id = mentionMatches[min(mentionIndex, mentionMatches.count - 1)]
+        if let agent = model.agents.profiles.first(where: { $0.recipientID == id }) { model.acceptAgent(agent) }
+        else if model.selectedAIRecipients.contains(id) { model.selectedAIRecipients.remove(id) }
+        else { model.selectedAIRecipients.insert(id) }
+        closeComposerActions(); return .handled
+    }
+
+    private var mentionMatches: [String] {
         let query = ComposerMention.query(in: model.draft) ?? ""
-        return model.aiRecipients.filter { query.isEmpty || ($0.name + " " + $0.model).localizedCaseInsensitiveContains(query) }
+        return model.agentMatches(query).map(\.recipientID) + (agentsOnly ? [] : model.aiRecipients.filter {
+            query.isEmpty || ($0.name + " " + $0.model).localizedCaseInsensitiveContains(query)
+        }.map(\.id))
     }
     private var mentionMenuHeight: CGFloat { min(430, max(160, composerTop - 12)) }
     private func moveMentionSelection(_ delta: Int) -> KeyPress.Result {
@@ -398,4 +437,26 @@ struct ConversationView: View {
     }
 
     private var claudeConnected: Bool { if case .ready = model.connectionStatus { true } else { false } }
+}
+
+private struct AgentMentionChip: View {
+    let profile: AgentProfile
+    let recipient: AIRecipient?
+    let working: Bool
+    let remove: () -> Void
+    private var ready: Bool { recipient != nil }
+    private var label: String { "@" + profile.handle }
+    private var tooltip: String { recipient.map { "Accepted · " + $0.detail } ?? "Configure this agent in Settings → Agents" }
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: ready ? "checkmark.circle.fill" : "exclamationmark.circle.fill")
+            Text(label).font(.caption.weight(.semibold))
+            Button(action: remove) { Image(systemName: "xmark") }
+                .buttonStyle(.plain).accessibilityLabel("Remove " + label).disabled(working)
+        }
+        .foregroundStyle(ready ? Studio.accent : Color.orange)
+        .padding(.horizontal, 10).padding(.vertical, 7)
+        .background(Studio.accent.opacity(0.1), in: Capsule())
+        .help(tooltip).accessibilityLabel(label + (ready ? " accepted" : " needs setup"))
+    }
 }

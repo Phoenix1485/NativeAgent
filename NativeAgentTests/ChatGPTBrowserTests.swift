@@ -626,4 +626,54 @@ final class ChatGPTBrowserTests: XCTestCase {
         XCTAssertEqual(registration.subject, "verified-subject")
         XCTAssertEqual(registration.tokens?.refreshToken, "fake-refresh")
     }
+    func testPreauthorizedAgentDelegationKeepsOtherToolApprovals() async throws {
+        func frame(_ name: String, id: String) throws -> String {
+            let event: JSONValue = .object(["type": .string("response.completed"), "response": .object(["output": .array([
+                .object(["type": .string("function_call"), "id": .string(id), "call_id": .string(id), "namespace": .string("nativeagent"), "name": .string(name), "arguments": .string("{}")])
+            ])])])
+            return "data: " + String(decoding: try JSONEncoder().encode(event), as: UTF8.self) + "\n\n"
+        }
+        ChatGPTFixtureProtocol.prepareStreams([try frame("delegate_agent", id: "agent-call"), try frame("ordinary_tool", id: "ordinary-call"),
+            "data: {\"type\":\"response.completed\",\"response\":{\"output\":[]}}\n\n"])
+        let configuration = URLSessionConfiguration.ephemeral; configuration.protocolClasses = [ChatGPTFixtureProtocol.self]
+        let store = MemoryChatGPTCredentials()
+        var record = store.load(); record.activeClientID = "oaiapp_fixture"
+        record.registrations = [.init(clientID: "oaiapp_fixture", subject: "fixture", email: nil,
+            tokens: .init(accessToken: "fake-access", expiresAt: .now.addingTimeInterval(3600), scope: ChatGPTAuth.scope))]
+        store.save(record)
+        let provider = ChatGPTProvider(store: store, http: ChatGPTHTTP(session: URLSession(configuration: configuration)))
+        let counter = ToolExecutionCounter()
+        await provider.setNativeTools([
+            NativeTool(name: "delegate_agent", description: "Preauthorized fixture", schema: .object(["type": .string("object")])) { _ in
+                PreparedNativeTool(title: "Ask specialist", review: "Delegation fixture", requiresApproval: false) { await counter.run() }
+            },
+            NativeTool(name: "ordinary_tool", description: "Requires approval", schema: .object(["type": .string("object")])) { _ in
+                PreparedNativeTool(title: "Ordinary tool", review: "Review this operation") { await counter.run() }
+            }
+        ])
+        let completed = expectation(description: "Both tools finished")
+        let events = await provider.events
+        let consumer = Task { () -> Int in
+            var approvals = 0
+            for await event in events {
+                if case .approval(let request) = event {
+                    approvals += 1
+                    XCTAssertEqual(request.method, "ordinary_tool")
+                    let count = await counter.count; XCTAssertEqual(count, 1)
+                    try? await provider.answerApproval(id: request.id, decision: .accept)
+                }
+                if case .turnCompleted(_, let status, _) = event {
+                    XCTAssertEqual(status, .completed); completed.fulfill(); return approvals
+                }
+            }
+            return approvals
+        }
+        try await provider.connect()
+        try await provider.startTurn(threadID: "fixture", prompt: "Use both tools", projectPath: "/unused", model: "fixture")
+        await fulfillment(of: [completed], timeout: 5)
+        let approvals = await consumer.value, calls = await counter.count
+        XCTAssertEqual(approvals, 1); XCTAssertEqual(calls, 2)
+        consumer.cancel(); await provider.disconnect()
+    }
+
 }

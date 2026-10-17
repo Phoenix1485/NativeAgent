@@ -22,7 +22,7 @@ final class WorkspaceSnapshotTests: XCTestCase {
         try FileManager.default.createDirectory(atPath: destination, withIntermediateDirectories: true)
         for dark in [true, false] {
             let suffix = dark ? "dark" : "light"
-            try renderView(ComposerActionsView(dismiss: {}, query: "").environmentObject(model), name: "ai-actions-" + suffix, dark: dark, destination: destination, size: NSSize(width: 580, height: 490))
+            try renderView(ComposerActionsView(dismiss: {}, query: "", agentsOnly: .constant(false)).environmentObject(model), name: "ai-actions-" + suffix, dark: dark, destination: destination, size: NSSize(width: 580, height: 490))
             try renderView(AIConnectionsView().environmentObject(model).padding(24), name: "ai-settings-" + suffix, dark: dark, destination: destination, size: NSSize(width: 650, height: 540))
         }
         model.draft = "Review this question @"

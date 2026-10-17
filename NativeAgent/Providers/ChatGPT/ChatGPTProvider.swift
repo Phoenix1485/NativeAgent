@@ -387,11 +387,14 @@ actor ChatGPTProvider: CodingProvider {
             let prepared = try await tool.prepare(args)
             try Task.checkCancellation()
             guard generation == operation else { throw CancellationError() }
-            let approved = await withCheckedContinuation { response in
+            let approved: Bool
+            if prepared.requiresApproval {
+                approved = await withCheckedContinuation { response in
                 pendingApproval = (key, response)
                 continuation.yield(.approval(.init(id: key, turnID: turnID, method: name, title: prepared.title,
                     command: prepared.review, workingDirectory: nil, choices: [.accept, .decline, .cancel])))
             }
+            } else { approved = true }
             try Task.checkCancellation()
             guard generation == operation else { throw CancellationError() }
             guard approved else { return "User denied this tool call. Do not retry it or use another tool to bypass the denial." }
