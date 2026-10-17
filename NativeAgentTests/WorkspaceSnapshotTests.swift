@@ -110,7 +110,7 @@ final class WorkspaceSnapshotTests: XCTestCase {
 
     @MainActor
     private func renderView<Content: View>(_ root: Content, name: String, dark: Bool, destination: String, size: NSSize) throws {
-        let view = NSHostingView(rootView: root.frame(width: size.width, height: size.height).background(Studio.canvas).environment(\.colorScheme, dark ? .dark : .light))
+        let view = NSHostingView(rootView: root.environmentObject(AppUpdater()).frame(width: size.width, height: size.height).background(Studio.canvas).environment(\.colorScheme, dark ? .dark : .light))
         view.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
         let window = NSWindow(contentRect: NSRect(origin: .zero, size: size), styleMask: [.borderless], backing: .buffered, defer: false)
         window.contentView = view

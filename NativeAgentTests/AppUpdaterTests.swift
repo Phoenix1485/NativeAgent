@@ -3,6 +3,18 @@ import XCTest
 
 @MainActor
 final class AppUpdaterTests: XCTestCase {
+    func testInstalledVersionUsesBundleMetadataAndDoesNotInventARelease() {
+        XCTAssertEqual(AppUpdater.versionLabel(info: ["CFBundleShortVersionString": "0.6.3", "CFBundleVersion": "13"]), "Version 0.6.3 (13)")
+        XCTAssertEqual(AppUpdater.versionLabel(info: ["CFBundleShortVersionString": "0.6.2", "CFBundleVersion": "12"]), "Version 0.6.2 (12)")
+        XCTAssertEqual(AppUpdater.versionLabel(info: ["CFBundleShortVersionString": "1.0"]), "Version 1.0")
+        XCTAssertEqual(AppUpdater.versionLabel(info: [:]), "Development build")
+        XCTAssertEqual(AppUpdater.versionLabel(info: ["CFBundleShortVersionString": " ", "CFBundleVersion": "13"]), "Development build")
+        XCTAssertEqual(AppUpdater.downloadPageURL.absoluteString, "https://phoenix1485.github.io/NativeAgent/")
+        if Bundle.main.bundleIdentifier != "dev.nativeagent.mac" {
+            XCTAssertEqual(AppUpdater().installedVersionLabel, "Development build")
+        }
+    }
+
     func testLaunchCheckRespectsOptOutAndAvoidsRepeatedChecks() {
         let now = Date()
         XCTAssertTrue(AppUpdater.shouldCheckAtLaunch(enabled: true, lastCheck: nil, now: now))

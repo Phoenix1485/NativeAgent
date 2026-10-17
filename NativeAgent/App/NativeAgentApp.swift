@@ -59,6 +59,7 @@ struct NativeAgentApp: App {
         Settings {
             ProviderSettingsView()
                 .environmentObject(container.viewModel)
+                .environmentObject(updater)
                 .frame(width: 940, height: 690)
         }
     }

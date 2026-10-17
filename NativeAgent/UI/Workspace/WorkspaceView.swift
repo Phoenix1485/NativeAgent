@@ -133,6 +133,9 @@ struct WorkspaceView: View {
             Rectangle().fill(Studio.line).frame(width: 1, height: 18)
             Button { model.features.paletteVisible = true } label: { Image(systemName: "command") }.buttonStyle(QuietButtonStyle()).help("Command palette (⌘K)").accessibilityLabel("Command palette")
             Menu {
+                Button("Check for Updates…") { updater.checkForUpdates() }.disabled(!updater.canCheckForUpdates)
+                Link("Download NativeAgent…", destination: AppUpdater.downloadPageURL)
+                Divider()
                 ForEach(WorkspaceCommand.allCases) { command in
                     Button(command.title) { if command == .settings { openSettings() } else { model.features.execute(command) } }.disabled(!model.features.canExecute(command))
                 }

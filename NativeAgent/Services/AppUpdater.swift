@@ -18,6 +18,22 @@ final class AppUpdater: NSObject, ObservableObject, SPUUpdaterDelegate {
     private var activitySubscription: AnyCancellable?
     weak var model: WorkspaceViewModel?
 
+    static let downloadPageURL = URL(string: "https://phoenix1485.github.io/NativeAgent/")!
+
+    static func versionLabel(info: [String: Any]) -> String {
+        let version = (info["CFBundleShortVersionString"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let build = (info["CFBundleVersion"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let version, !version.isEmpty else { return "Development build" }
+        guard let build, !build.isEmpty else { return "Version \(version)" }
+        return "Version \(version) (\(build))"
+    }
+
+    var installedVersionLabel: String {
+        // Preview/test hosts have their own version; never present that as NativeAgent's.
+        guard Bundle.main.bundleIdentifier == "dev.nativeagent.mac" else { return "Development build" }
+        return Self.versionLabel(info: Bundle.main.infoDictionary ?? [:])
+    }
+
     static func validConfiguration(_ info: [String: Any]) -> Bool {
         guard let raw = info["SUFeedURL"] as? String, let url = URL(string: raw),
               url.scheme == "https", url.host?.isEmpty == false, url.user == nil, url.password == nil,

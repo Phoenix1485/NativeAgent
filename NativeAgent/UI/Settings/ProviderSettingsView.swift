@@ -20,6 +20,7 @@ struct ProviderSettingsView: View {
 }
 
 struct SettingsHub: View {
+    @EnvironmentObject private var updater: AppUpdater
     @ObservedObject var model: WorkspaceViewModel
     @ObservedObject var settings: AppPreferences
     var onboarding = false
@@ -102,6 +103,25 @@ struct SettingsHub: View {
                 Text("Private by design").font(.system(size: 11, weight: .medium))
                 Text("Keys and ChatGPT authorization tokens stay in Keychain. Passwords stay with your provider.").font(.system(size: 11)).foregroundStyle(.secondary).lineSpacing(3)
             }
+            Divider()
+            VStack(alignment: .leading, spacing: 9) {
+                Text(updater.installedVersionLabel)
+                    .font(.system(size: 11, weight: .medium)).foregroundStyle(.secondary)
+                    .textSelection(.enabled).accessibilityIdentifier("installed-app-version")
+                if let version = updater.availableVersion {
+                    Text("Update \(version) available").font(.system(size: 11, weight: .medium)).foregroundStyle(Studio.accent)
+                }
+                Button { updater.checkForUpdates() } label: {
+                    Label("Check for Updates…", systemImage: "arrow.triangle.2.circlepath")
+                }.buttonStyle(.plain).foregroundStyle(Studio.accent).disabled(!updater.canCheckForUpdates)
+                    .accessibilityIdentifier("settings-check-for-updates")
+                if !updater.configured {
+                    Text("Use the download link to update this build.").font(.system(size: 10)).foregroundStyle(.secondary)
+                }
+                Link(destination: AppUpdater.downloadPageURL) {
+                    Label("Download on GitHub Pages", systemImage: "arrow.up.right.square")
+                }.foregroundStyle(Studio.accent).accessibilityIdentifier("settings-download-link")
+            }.font(.system(size: 11))
         }.padding(22).frame(width: 215).frame(maxHeight: .infinity).background(Studio.sidebar)
     }
 
