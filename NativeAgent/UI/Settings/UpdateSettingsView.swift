@@ -33,6 +33,7 @@ struct WhatsNewView: View {
     @EnvironmentObject private var updater: AppUpdater
     @Environment(\.dismiss) private var dismiss
     private let highlights = [
+        ("Organized chat actions", "Chat menus now group Markdown and PDF under Export, with dividers separating Rename and Pin, Export, Archive chat, and Move to."),
         ("New chat works where you expect", "New chat and ⌘N open a blank composer in the requested location. Existing drafts and attachments stay saved, group chats no longer block standalone chats, and New chat returns from Files to the main AI conversation."),
         ("CLI and model update checks", "Check Claude and Grok versions at startup and at :00 and :30 each hour. Refresh the connected ChatGPT model catalog, see installed/latest CLI versions, or check manually in Settings → Updates."),
         ("Your own specialist agents", "Configure agents with their own AI connection, instructions and references. Add them through @mentions, or let direct ChatGPT delegate using your chosen approval mode and call limit."),
