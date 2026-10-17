@@ -19,13 +19,13 @@ struct ProjectSidebarView: View {
                 Text("NativeAgent").font(.system(size: 15, weight: .semibold))
                 Spacer()
                 Menu {
-                    Button("New chat", systemImage: "square.and.pencil") { Task { await model.newConversation() } }
+                    Button("New chat", systemImage: "square.and.pencil") { Task { await model.newConversation(fromUserAction: true) } }
                     Button("New group", systemImage: "folder.badge.plus") { editor = GroupEditorRequest() }
                 } label: { Image(systemName: "plus") }
                 .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize().help("Create chat or group")
             }.padding(.horizontal, 20).frame(height: 64)
             VStack(spacing: 8) {
-                Button { Task { await model.newConversation() } } label: {
+                Button { Task { await model.newConversation(fromUserAction: true) } } label: {
                     HStack {
                         Image(systemName: "square.and.pencil")
                         Text("New chat").fontWeight(.medium)
@@ -81,6 +81,7 @@ struct ProjectSidebarView: View {
         }.frame(maxHeight: .infinity, alignment: .top).background(Studio.sidebar)
             .sheet(item: $editor) { GroupEditorView(request: $0) }
             .sheet(isPresented: $showingArchive) { ArchiveView() }
+            .onChange(of: model.newChatFocusRequest) { search = "" }
             .task(id: search) { await model.searchChats(search) }
     }
 
@@ -114,7 +115,7 @@ private struct GroupTreeRow: View {
                 }.buttonStyle(.plain)
             }.background(targeted ? Studio.accent.opacity(0.15) : .clear, in: RoundedRectangle(cornerRadius: 8))
             .contextMenu {
-                Button("New chat", systemImage: "square.and.pencil") { Task { await model.newConversation(in: group.id) } }
+                Button("New chat", systemImage: "square.and.pencil") { Task { await model.newConversation(in: group.id, fromUserAction: true) } }
                 Button("New folder", systemImage: "folder.badge.plus") { editor = GroupEditorRequest(parentID: group.id) }
                 Divider()
                 Button("Edit group…", systemImage: "pencil") { editor = GroupEditorRequest(parentID: group.parentID, editing: group) }
@@ -139,7 +140,7 @@ private struct GroupTreeRow: View {
                     ForEach(model.chats(in: group.id)) { chat in ChatSidebarRow(chat: chat) }
                     ChatPageButton(groupID: group.id)
                     if !model.groups.contains(where: { $0.parentID == group.id }) && !model.conversations.contains(where: { $0.groupID == group.id }) {
-                        Button("Add a chat") { Task { await model.newConversation(in: group.id) } }.buttonStyle(.plain).font(.system(size: 11)).foregroundStyle(.tertiary).padding(.horizontal, 12).padding(.vertical, 7)
+                        Button("Add a chat") { Task { await model.newConversation(in: group.id, fromUserAction: true) } }.buttonStyle(.plain).font(.system(size: 11)).foregroundStyle(.tertiary).padding(.horizontal, 12).padding(.vertical, 7)
                     }
                 }.padding(.leading, 18)
             }

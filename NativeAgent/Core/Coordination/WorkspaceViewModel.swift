@@ -102,6 +102,7 @@ final class WorkspaceViewModel: ObservableObject {
     @Published var showAgents = false
     private var agentsSubscription: AnyCancellable?
     @Published var selectedAIRecipients: Set<String> = []
+    @Published private(set) var newChatFocusRequest = UUID()
     @Published var showAIConnections = false
     @Published private(set) var pendingAIAnswers: [String] = []
     private var aiSubscription: AnyCancellable?
@@ -701,22 +702,28 @@ final class WorkspaceViewModel: ObservableObject {
         } catch { show(error) }
     }
 
-    func newConversation(in groupID: UUID? = nil) async {
+    func newConversation(in groupID: UUID? = nil, fromUserAction: Bool = false) async {
         let previous = creationTail
         let operation = Task { [weak self] in
             await previous?.value
-            await self?.createConversation(in: groupID)
+            await self?.createConversation(in: groupID, fromUserAction: fromUserAction)
         }
         creationTail = operation
         await operation.value
     }
 
-    private func createConversation(in groupID: UUID?) async {
+    private func createConversation(in groupID: UUID?, fromUserAction: Bool) async {
         do {
             await persistenceTask?.value
+            // Persist the current editor before deciding whether an unsent chat is empty.
+            draftSaveTask?.cancel()
+            if draftLoaded, let chat = selectedConversation { try await database.saveDraft(draft, conversationID: chat.id) }
+            try await features.saveContext()
+            let projectID = project(for: groupID)?.id ?? (groupID == nil && selectedGroupID == nil ? selectedProject?.id : nil)
             var excluded = archivingIDs
             if let activeConversationID { excluded.insert(activeConversationID) }
-            if let existing = try await database.unsentConversation(preferredID: selectedConversation?.id, excluding: excluded) {
+            if let existing = try await database.emptyConversation(groupID: groupID, projectID: projectID,
+                preferredID: selectedConversation?.id, excluding: excluded) {
                 upsertChat(existing)
                 if selectedConversation?.id != existing.id { await select(existing) }
                 var ancestor = existing.groupID
@@ -725,9 +732,10 @@ final class WorkspaceViewModel: ObservableObject {
                     expand(id, expanded: true)
                     ancestor = groups.first { $0.id == id }?.parentID
                 }
+                if fromUserAction { revealNewChat() }
                 return
             }
-            var conversation = Conversation(projectID: project(for: groupID)?.id ?? (groupID == nil && selectedGroupID == nil ? selectedProject?.id : nil), groupID: groupID)
+            var conversation = Conversation(projectID: projectID, groupID: groupID)
             conversation.providerID = settings.provider
             if !isWorking { selectedModelID = settings.resolvedDefault(settings.provider) }
             try await database.save(conversation: conversation)
@@ -735,7 +743,14 @@ final class WorkspaceViewModel: ObservableObject {
             await select(conversation)
             await features.applyProfileForNewConversation()
             if let groupID { expand(groupID, expanded: true) }
+            if fromUserAction { revealNewChat() }
         } catch { show(error) }
+    }
+
+    private func revealNewChat() {
+        selectedAIRecipients = []
+        features.panel = nil; features.paletteVisible = false
+        newChatFocusRequest = UUID()
     }
 
     func select(_ conversation: Conversation) async {

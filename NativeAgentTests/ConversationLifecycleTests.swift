@@ -134,7 +134,7 @@ final class ConversationLifecycleTests: XCTestCase {
         XCTAssertTrue(model.conversationPrompts.isEmpty)
     }
 
-    func testRapidNewChatRequestsReuseOneUnsentChatAndPreserveDraft() async throws {
+    func testRapidNewChatRequestsReuseOneBlankChatAndPreservePreviousDraft() async throws {
         await model.newConversation()
         let original = try XCTUnwrap(model.selectedConversation)
         model.draft = "Keep my draft"
@@ -142,16 +142,16 @@ final class ConversationLifecycleTests: XCTestCase {
             for _ in 0..<30 { group.addTask { await self.model.newConversation() } }
         }
         let chats = try await database.conversations()
-        XCTAssertEqual(chats.count, 1)
-        XCTAssertEqual(model.conversations.count, 1)
-        XCTAssertEqual(model.selectedConversation?.id, original.id)
-        XCTAssertEqual(model.draft, "Keep my draft")
+        XCTAssertEqual(chats.count, 2)
+        XCTAssertEqual(model.conversations.count, 2)
+        XCTAssertNotEqual(model.selectedConversation?.id, original.id)
+        XCTAssertEqual(model.draft, "")
         await model.select(original)
         XCTAssertEqual(model.draft, "Keep my draft")
         XCTAssertTrue(model.rootFiles.isEmpty, "Chat navigation must not eagerly scan workspace files")
     }
 
-    func testNewChatAfterHistoryCreatesOnlyOneAdditionalChat() async throws {
+    func testNewChatDoesNotReopenAnUnsentDraft() async throws {
         await model.newConversation()
         let first = try XCTUnwrap(model.selectedConversation)
         try await database.save(entry: .init(kind: .userMessage, title: "You", text: "A sent message"), conversationID: first.id)
@@ -161,13 +161,16 @@ final class ConversationLifecycleTests: XCTestCase {
         model.draft = "Unsent work"
         await model.select(first)
         await model.newConversation()
-        XCTAssertEqual(model.selectedConversation?.id, second.id)
-        XCTAssertEqual(model.draft, "Unsent work")
+        XCTAssertNotEqual(model.selectedConversation?.id, second.id)
+        XCTAssertNotEqual(model.selectedConversation?.id, first.id)
+        XCTAssertEqual(model.draft, "")
         let chats = try await database.conversations()
-        XCTAssertEqual(chats.count, 2)
+        XCTAssertEqual(chats.count, 3)
+        await model.select(second)
+        XCTAssertEqual(model.draft, "Unsent work")
     }
 
-    func testNewChatFindsUnloadedUnsentChatAfterRestartWithoutMovingItsFolder() async throws {
+    func testStandaloneNewChatDoesNotReuseAnUnloadedGroupDraftAfterRestart() async throws {
         let parent = ChatGroup(name: "Parent")
         try await database.save(group: parent)
         let group = ChatGroup(parentID: parent.id, name: "Saved group")
@@ -178,13 +181,64 @@ final class ConversationLifecycleTests: XCTestCase {
         model.groups = [parent, group]
         XCTAssertTrue(model.conversations.isEmpty)
         await model.newConversation()
-        XCTAssertEqual(model.selectedConversation?.id, saved.id)
-        XCTAssertEqual(model.selectedConversation?.groupID, group.id)
-        XCTAssertEqual(model.draft, "Saved draft")
-        XCTAssertTrue(model.expandedGroupIDs.contains(group.id))
-        XCTAssertTrue(model.expandedGroupIDs.contains(parent.id))
+        XCTAssertNotEqual(model.selectedConversation?.id, saved.id)
+        XCTAssertNil(model.selectedConversation?.groupID)
+        XCTAssertEqual(model.draft, "")
         let chats = try await database.conversations()
-        XCTAssertEqual(chats.count, 1)
+        XCTAssertEqual(chats.count, 2)
+        XCTAssertEqual(chats.first { $0.id == saved.id }?.groupID, group.id)
+        await model.select(saved)
+        XCTAssertEqual(model.draft, "Saved draft")
+    }
+
+    func testNewChatRespectsRequestedGroupAndReusesOnlyThatGroupsBlankChat() async throws {
+        let group = ChatGroup(name: "Project group")
+        try await database.save(group: group); model.groups = [group]
+        await model.newConversation(in: group.id)
+        let grouped = try XCTUnwrap(model.selectedConversation)
+        await model.newConversation(fromUserAction: true)
+        let standalone = try XCTUnwrap(model.selectedConversation)
+        XCTAssertNotEqual(standalone.id, grouped.id)
+        XCTAssertNil(standalone.groupID)
+        XCTAssertNil(model.selectedGroupID)
+        await model.newConversation(in: group.id, fromUserAction: true)
+        XCTAssertEqual(model.selectedConversation?.id, grouped.id)
+        XCTAssertTrue(model.expandedGroupIDs.contains(group.id))
+        await model.newConversation(fromUserAction: true)
+        XCTAssertEqual(model.selectedConversation?.id, standalone.id)
+    }
+
+    func testNewChatPreservesPreparedContextAndWorkingFolder() async throws {
+        await model.newConversation(); await model.addProject(directory)
+        let original = try XCTUnwrap(model.selectedConversation)
+        let item = ContextAttachment(kind: .excerpt, title: "Review this", text: "Keep this context")
+        await model.features.addContext(item)
+        await model.newConversation(fromUserAction: true)
+        XCTAssertNotEqual(model.selectedConversation?.id, original.id)
+        XCTAssertEqual(model.selectedConversation?.projectID, original.projectID)
+        XCTAssertTrue(model.features.context.isEmpty)
+        await model.select(original)
+        XCTAssertEqual(model.features.context, [item])
+    }
+
+    func testNewChatCommandReturnsToNormalChatAndRequestsFocusEvenWhenReusingBlankChat() async throws {
+        await model.newConversation()
+        let original = try XCTUnwrap(model.selectedConversation)
+        model.selectedAIRecipients = ["previous-specialist"]
+        model.features.panel = .github; model.features.paletteVisible = true
+        let request = model.newChatFocusRequest
+        // The menu's Command-N action uses the same dispatcher.
+        model.features.execute(.newChat)
+        let deadline = ContinuousClock.now.advanced(by: .seconds(2))
+        while model.newChatFocusRequest == request && ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertNotEqual(model.newChatFocusRequest, request)
+        XCTAssertEqual(model.selectedConversation?.id, original.id)
+        XCTAssertFalse(model.usesRecipientChat)
+        XCTAssertNil(model.features.panel)
+        XCTAssertFalse(model.features.paletteVisible)
+        model.selectedAIRecipients = ["chosen-for-attachment"]
+        await model.newConversation()
+        XCTAssertEqual(model.selectedAIRecipients, ["chosen-for-attachment"], "Implicit chat creation must keep an explicitly chosen recipient")
     }
 
     func testArchivedUnsentChatDoesNotBlockCreatingNewChat() async throws {

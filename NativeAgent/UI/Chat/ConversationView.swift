@@ -97,6 +97,7 @@ struct ConversationView: View {
                 if ComposerMention.query(in: model.draft)?.lowercased() == "agents" { agentsOnly = true }
             }
             .onChange(of: model.selectedConversation?.id) { showComposerActions = false }
+            .onChange(of: model.newChatFocusRequest) { composerFocused = true; showComposerActions = false }
             .onChange(of: model.selectedConversation?.id) { pagingIntent.reset(); messageFrames = [:]; paging = false; pagingRequest = UUID(); atBottom = true; visiblePromptID = nil }
     }
 
@@ -112,7 +113,7 @@ struct ConversationView: View {
                 .font(.system(size: 14)).foregroundStyle(.secondary).lineSpacing(5)
             if let group = model.selectedGroup {
                 HStack(spacing: 12) {
-                    Button { Task { await model.newConversation(in: group.id) } } label: { Label("New chat", systemImage: "plus") }.buttonStyle(.borderedProminent)
+                    Button { Task { await model.newConversation(in: group.id, fromUserAction: true) } } label: { Label("New chat", systemImage: "plus") }.buttonStyle(.borderedProminent)
                     Button { editor = GroupEditorRequest(parentID: group.id) } label: { Label("New folder", systemImage: "folder.badge.plus") }.buttonStyle(.bordered)
                     Button { editor = GroupEditorRequest(parentID: group.parentID, editing: group) } label: { Image(systemName: "ellipsis") }.buttonStyle(QuietButtonStyle()).help("Edit group")
                 }.controlSize(.large).padding(.top, 5)

@@ -536,7 +536,7 @@ final class WorkspaceFeaturesController: ObservableObject {
         guard canExecute(command) else { return }; paletteVisible = false
         switch command {
         case .reports: selectedReport = nil; panel = .reports
-        case .newChat: Task { await model?.newConversation() }
+        case .newChat: Task { await model?.newConversation(fromUserAction: true) }
         case .files, .changes: session.inspector = true; session.inspectorTab = command == .files ? "Files" : "Changes"
         case .terminal: session.terminal.toggle()
         case .settings: NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)

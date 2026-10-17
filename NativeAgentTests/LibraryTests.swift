@@ -76,10 +76,10 @@ final class LibraryTests: XCTestCase {
         XCTAssertEqual(model.selectedConversation?.projectID, root.projectID)
         XCTAssertEqual(model.selectedProject?.canonicalPath, directory.resolvingSymlinksInPath().path)
         let grouped = try XCTUnwrap(model.selectedConversation)
-        // New Chat keeps the single unsent conversation, including its folder.
+        // The global action creates a standalone chat even when a group has an empty chat.
         await model.newConversation()
-        XCTAssertEqual(model.selectedConversation?.id, grouped.id)
-        XCTAssertEqual(model.selectedConversation?.groupID, child.id)
+        XCTAssertNotEqual(model.selectedConversation?.id, grouped.id)
+        XCTAssertNil(model.selectedConversation?.groupID)
         try await database.save(entry: .init(kind: .userMessage, title: "You", text: "Start this chat"), conversationID: grouped.id)
         await model.newConversation()
         let standalone = try XCTUnwrap(model.selectedConversation)

@@ -236,17 +236,22 @@ actor DatabaseActor {
         }
     }
 
-    /// Search the whole library, not only sidebar pages already loaded in memory.
-    /// Drafts and folder choices are retained when this unsent chat is reused.
-    func unsentConversation(preferredID: UUID?, excluding: Set<UUID> = []) throws -> Conversation? {
+    /// Reuse only a blank chat in the requested location, including unloaded sidebar pages.
+    /// Unsent drafts and prepared context belong to their original chat.
+    func emptyConversation(groupID: UUID?, projectID: UUID?, preferredID: UUID?, excluding: Set<UUID> = []) throws -> Conversation? {
         try ensureInitialized()
         var sql = """
         SELECT c.id,c.project_id,c.remote_thread_id,c.title,c.created_at,c.updated_at,c.group_id,c.provider_id
         FROM conversations c WHERE c.archived_at IS NULL AND c.remote_thread_id IS NULL
+        AND c.group_id IS ? AND c.project_id IS ? AND c.title='New chat'
         AND NOT EXISTS (SELECT 1 FROM timeline_items t WHERE t.conversation_id=c.id)
         AND NOT EXISTS (SELECT 1 FROM turns t WHERE t.conversation_id=c.id)
+        AND NOT EXISTS (SELECT 1 FROM drafts d WHERE d.conversation_id=c.id AND d.text<>'')
+        AND NOT EXISTS (SELECT 1 FROM feature_records f WHERE f.conversation_id=c.id
+            AND f.kind IN ('context','chat-pins','branch') AND f.payload NOT IN ('[]','""'))
         """
-        var bindings: [Binding] = []
+        var bindings: [Binding] = [groupID.map { .text($0.uuidString) } ?? .null,
+                                   projectID.map { .text($0.uuidString) } ?? .null]
         if !excluding.isEmpty {
             sql += " AND c.id NOT IN (" + excluding.map { _ in "?" }.joined(separator: ",") + ")"
             bindings += excluding.map { .text($0.uuidString) }

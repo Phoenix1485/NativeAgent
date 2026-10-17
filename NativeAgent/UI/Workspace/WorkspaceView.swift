@@ -35,7 +35,8 @@ struct WorkspaceView: View {
             }
             .sheet(isPresented: $fileBrowser.quickOpenVisible) { QuickOpenFilesView(browser: fileBrowser).environmentObject(model) }
             .onChange(of: model.selectedProject?.id) { fileBrowser.reset() }
-            .onChange(of: fileBrowser.showingTab) { NSApp.keyWindow?.makeFirstResponder(nil) }
+            .onChange(of: fileBrowser.showingTab) { if fileBrowser.showingTab { NSApp.keyWindow?.makeFirstResponder(nil) } }
+            .onChange(of: model.newChatFocusRequest) { fileBrowser.showingTab = false }
             .background(GeometryReader { proxy in
                 Color.clear.onAppear { availableWidth = proxy.size.width }
                     .onChange(of: proxy.size.width) { availableWidth = proxy.size.width }
