@@ -566,6 +566,7 @@ final class WorkspaceViewModel: ObservableObject {
         do {
             try await database.removeEmptyGroup(id: group.id)
             groups = try await database.groups()
+            expand(group.id, expanded: false)
             if selectedGroupID == group.id { await selectGroup(nil) }
         } catch { show(error) }
     }

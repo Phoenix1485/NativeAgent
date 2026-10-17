@@ -437,9 +437,30 @@ actor DatabaseActor {
 
     func removeEmptyGroup(id: UUID) throws {
         try ensureInitialized()
-        let children = try query("SELECT (SELECT COUNT(*) FROM chat_groups WHERE parent_id=?) + (SELECT COUNT(*) FROM conversations WHERE group_id=?)", [.text(id.uuidString), .text(id.uuidString)]) { $0.int(0) }.first ?? 0
-        guard children == 0 else { throw NativeAgentError.unsupported("Move the chats and folders out of this group before removing it.") }
-        try execute("DELETE FROM chat_groups WHERE id=?", [.text(id.uuidString)])
+        try execute("BEGIN IMMEDIATE")
+        do {
+            let occupied = try query("""
+            SELECT EXISTS(SELECT 1 FROM chat_groups WHERE parent_id=?)
+                OR EXISTS(SELECT 1 FROM conversations WHERE group_id=? AND archived_at IS NULL)
+            """, [.text(id.uuidString), .text(id.uuidString)]) { $0.int(0) }.first ?? 0
+            guard occupied == 0 else { throw NativeAgentError.unsupported("Move the chats and folders out of this group before removing it.") }
+            // Archived chats are hidden from the sidebar. Keep their history and retention
+            // dates; detach even expired rows that have not reached scheduled cleanup yet.
+            // Preserve a workspace inherited from this group or its nearest ancestor.
+            try execute("""
+            WITH RECURSIVE workspace(id,parent_id,project_id) AS (
+                SELECT id,parent_id,project_id FROM chat_groups WHERE id=?
+                UNION ALL
+                SELECT g.id,g.parent_id,g.project_id FROM chat_groups g
+                JOIN workspace w ON g.id=w.parent_id WHERE w.project_id IS NULL
+            )
+            UPDATE conversations SET group_id=NULL,
+                project_id=COALESCE(project_id,(SELECT project_id FROM workspace WHERE project_id IS NOT NULL LIMIT 1))
+            WHERE group_id=? AND archived_at IS NOT NULL
+            """, [.text(id.uuidString), .text(id.uuidString)])
+            try execute("DELETE FROM chat_groups WHERE id=?", [.text(id.uuidString)])
+            try execute("COMMIT")
+        } catch { try? execute("ROLLBACK"); throw error }
     }
 
     private func migrateLibrary() throws {
