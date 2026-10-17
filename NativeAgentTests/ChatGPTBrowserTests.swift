@@ -417,6 +417,17 @@ final class ChatGPTBrowserTests: XCTestCase {
         XCTAssertEqual(body["store"], .bool(false)); XCTAssertEqual(body["stream"], .bool(true))
         XCTAssertNil(body["tools"]); XCTAssertNil(body["previous_response_id"])
         XCTAssertEqual(body["model"], .string("fixture"))
+        // Reviews can be longer than a title but still use the isolated, tool-free path.
+        let review = String(repeating: "r", count: 9_000)
+        let reviewContent = JSONValue.object(["type": .string("output_text"), "text": .string(review)])
+        let reviewMessage = JSONValue.object(["type": .string("message"), "content": .array([reviewContent])])
+        let reviewEvent = JSONValue.object(["type": .string("response.completed"), "response": .object(["output": .array([reviewMessage])])])
+        let reviewFrame = "data: " + String(decoding: try JSONEncoder().encode(reviewEvent), as: UTF8.self) + "\n\n"
+        ChatGPTFixtureProtocol.prepare(reviewFrame)
+        let answer = try await provider.textCompletion(instructions: "Review", input: "Question", model: "fixture")
+        XCTAssertEqual(answer.count, 9_000)
+        ChatGPTFixtureProtocol.prepare(reviewFrame)
+        do { _ = try await provider.titleCompletion(instructions: "Name", input: "Question", model: "fixture"); XCTFail("Title limits changed") } catch { }
         for frame in ["data: {\"type\":\"response.output_text.delta\",\"delta\":\"Partial title\"}\n\n",
                       "data: {\"type\":\"response.incomplete\"}\n\n"] {
             ChatGPTFixtureProtocol.prepare(frame)

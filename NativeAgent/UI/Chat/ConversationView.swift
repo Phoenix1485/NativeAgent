@@ -19,6 +19,9 @@ struct ConversationView: View {
     @State private var visiblePromptID: UUID?
     @State private var timelineHeight: CGFloat = 0
     @State private var showPlugins = false
+    @State private var showComposerActions = false
+    @State private var mentionIndex = 0
+    @State private var composerTop: CGFloat = 400
     @State private var messageFrames: [UUID: CGRect] = [:]
     @State private var pagingIntent = HistoryPagingIntent()
     @State private var paging = false
@@ -63,7 +66,7 @@ struct ConversationView: View {
                 timeline.id(model.selectedConversation?.id)
                 composer.frame(maxWidth: 780).padding(.horizontal, 28).padding(.bottom, 22).padding(.top, 12)
             }
-        }.background(GeometryReader { proxy in
+        }.coordinateSpace(name: "conversationBody").background(GeometryReader { proxy in
             Color.clear.onAppear { availableHeight = proxy.size.height }.onChange(of: proxy.size.height) { availableHeight = proxy.size.height }
         }).sheet(item: $editor) { GroupEditorView(request: $0) }
             .sheet(isPresented: $showPlugins) {
@@ -73,6 +76,18 @@ struct ConversationView: View {
                 }.padding(24).frame(width: 680, height: 600)
             }
             .task(id: model.selectedConversation?.id) { await model.refreshConversationSummaries() }
+            .sheet(isPresented: $model.showAIConnections) {
+                VStack(alignment: .leading, spacing: 16) {
+                    HStack { Text("Your AIs").font(.headline); Spacer(); Button("Done") { model.showAIConnections = false } }
+                    ScrollView { AIConnectionsView() }
+                }.padding(24).frame(width: 680, height: 600)
+            }
+            .onChange(of: model.draft, initial: true) {
+                let showing = ComposerMention.query(in: model.draft) != nil
+                if showing && !showComposerActions { model.refreshSavedKeys() }
+                showComposerActions = showing; mentionIndex = 0
+            }
+            .onChange(of: model.selectedConversation?.id) { showComposerActions = false }
             .onChange(of: model.selectedConversation?.id) { pagingIntent.reset(); messageFrames = [:]; paging = false; pagingRequest = UUID(); atBottom = true; visiblePromptID = nil }
     }
 
@@ -256,8 +271,10 @@ struct ConversationView: View {
     private var composer: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 12) {
+                Button { showComposerActions.toggle(); model.refreshSavedKeys() } label: { Image(systemName: "at") }
+                    .help("Choose AIs and quick actions").accessibilityLabel("Choose AIs and quick actions").disabled(model.isWorking)
                 Button { Task { await model.features.chooseAttachments() } } label: { Label("Attach", systemImage: "paperclip") }
-                    .disabled(model.features.importingFiles || model.isWorking || model.settings.provider == .claude)
+                    .disabled(model.features.importingFiles || model.isWorking || (model.settings.provider == .claude && model.selectedAIRecipients.isEmpty))
                     .help("Attach UTF-8 text and code files, or drop them here")
                 Button("Plugins") { showPlugins = true }
                 Button("Templates") { model.features.execute(.templates) }
@@ -267,6 +284,20 @@ struct ConversationView: View {
                 if model.features.profile != nil { Button("Profile / overrides") { model.features.execute(.context) } }
             }.font(.caption).buttonStyle(.plain).foregroundStyle(.secondary).padding(.horizontal, 18).padding(.top, 12)
             AttachmentStrip(features: model.features)
+            if !model.selectedAIRecipients.isEmpty {
+                HStack(alignment: .top) {
+                    Image(systemName: "person.2.wave.2").foregroundStyle(Studio.accent)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(model.aiRecipients.filter { model.selectedAIRecipients.contains($0.id) }.map(\.name).joined(separator: " + ")).font(.caption.weight(.semibold))
+                        Text("Independent text answers · recent chat context shared · separate API billing").font(.system(size: 10)).foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Button("Clear") { model.selectedAIRecipients = [] }.font(.caption).disabled(model.isWorking)
+                }.padding(.horizontal, 18).padding(.top, 12)
+            }
+            if !model.pendingAIAnswers.isEmpty {
+                HStack { ProgressView().controlSize(.small); Text("Waiting for " + model.pendingAIAnswers.joined(separator: ", ")).font(.caption).foregroundStyle(.secondary) }.padding(12)
+            }
             if model.features.importingFiles { ProgressView("Reading files…").controlSize(.small).padding(12) }
             if let notice = model.features.notice {
                 HStack {
@@ -275,7 +306,7 @@ struct ConversationView: View {
                     Button { model.features.notice = nil } label: { Image(systemName: "xmark") }.accessibilityLabel("Dismiss attachment notice")
                 }.padding(12)
             }
-            if model.settings.provider == .claude {
+            if model.settings.provider == .claude && model.selectedAIRecipients.isEmpty {
                 VStack(alignment: .leading, spacing: 10) {
                     Label("Official Claude Code terminal", systemImage: "terminal").font(.headline)
                     Text("Claude Code handles its models, conversation history, permissions and interruption in Terminal. This native chat’s draft and history stay here.").font(.caption).foregroundStyle(.secondary)
@@ -288,8 +319,18 @@ struct ConversationView: View {
             ZStack(alignment: .topLeading) {
                 if model.draft.isEmpty { Text("Ask anything, or describe what you want to build…").font(.system(size: 14)).foregroundStyle(.tertiary).padding(.horizontal, 5).padding(.top, 8).allowsHitTesting(false) }
                 TextEditor(text: $model.draft).font(.system(size: 14)).scrollContentBackground(.hidden).focused($composerFocused).frame(height: model.timeline.isEmpty ? 96 : 76)
-                    .disabled(model.historyLoading || model.settings.provider == .claude)
+                    .disabled(model.historyLoading)
                     .onChange(of: model.draft) { model.scheduleDraftSave() }
+                    .onKeyPress(.escape) { if showComposerActions { closeComposerActions(); return .handled }; return .ignored }
+                    .onKeyPress(.downArrow) { moveMentionSelection(1) }
+                    .onKeyPress(.upArrow) { moveMentionSelection(-1) }
+                    .onKeyPress(.return) {
+                        guard showComposerActions, !mentionMatches.isEmpty else { return .ignored }
+                        let id = mentionMatches[min(mentionIndex, mentionMatches.count - 1)].id
+                        if model.selectedAIRecipients.contains(id) { model.selectedAIRecipients.remove(id) }
+                        else { model.selectedAIRecipients.insert(id) }
+                        closeComposerActions(); return .handled
+                    }
             }.padding(.horizontal, 15).padding(.top, 12)
             HStack(spacing: 10) {
                 Button { model.openProject() } label: {
@@ -301,7 +342,8 @@ struct ConversationView: View {
                         .background(Studio.hover.opacity(0.65), in: Capsule())
                 }.buttonStyle(.plain).disabled(model.selectedConversation?.remoteThreadID != nil).help(model.selectedProject?.canonicalPath ?? "Choose the working folder for this chat")
                 Spacer(minLength: 0)
-                ChatModelPicker()
+                if model.selectedAIRecipients.isEmpty { ChatModelPicker() }
+                else { Button("\(model.selectedAIRecipients.count) AI\(model.selectedAIRecipients.count == 1 ? "" : "s") ▾") { showComposerActions.toggle() }.font(.caption).disabled(model.isWorking) }
                 if model.isWorking {
                     Button { Task { await model.stop() } } label: { Image(systemName: "stop.fill").frame(width: 31, height: 31) }.buttonStyle(.plain).foregroundStyle(Studio.accent).help("Stop turn")
                 } else {
@@ -323,6 +365,34 @@ struct ConversationView: View {
             }
             .overlay(RoundedRectangle(cornerRadius: 16).stroke(composerFocused ? Studio.accent.opacity(0.5) : Studio.line, lineWidth: 1))
             .shadow(color: .black.opacity(0.04), radius: 12, y: 4)
+            .background(GeometryReader { geometry in
+                Color.clear.onAppear { composerTop = geometry.frame(in: .named("conversationBody")).minY }
+                    .onChange(of: geometry.frame(in: .named("conversationBody"))) { _, frame in composerTop = frame.minY }
+            })
+            .overlay(alignment: .top) {
+                if showComposerActions && !model.isWorking {
+                    ComposerActionsView(dismiss: closeComposerActions, query: ComposerMention.query(in: model.draft) ?? "", highlightedID: mentionMatches.indices.contains(mentionIndex) ? mentionMatches[mentionIndex].id : nil)
+                        .frame(height: mentionMenuHeight)
+                        .offset(y: -mentionMenuHeight - 8)
+                }
+            }
+    }
+
+    private func closeComposerActions() {
+        model.draft = ComposerMention.removingToken(from: model.draft)
+        showComposerActions = false
+        composerFocused = true
+    }
+
+    private var mentionMatches: [AIRecipient] {
+        let query = ComposerMention.query(in: model.draft) ?? ""
+        return model.aiRecipients.filter { query.isEmpty || ($0.name + " " + $0.model).localizedCaseInsensitiveContains(query) }
+    }
+    private var mentionMenuHeight: CGFloat { min(430, max(160, composerTop - 12)) }
+    private func moveMentionSelection(_ delta: Int) -> KeyPress.Result {
+        guard showComposerActions, !mentionMatches.isEmpty else { return .ignored }
+        mentionIndex = (mentionIndex + delta + mentionMatches.count) % mentionMatches.count
+        return .handled
     }
 
     private var claudeConnected: Bool { if case .ready = model.connectionStatus { true } else { false } }

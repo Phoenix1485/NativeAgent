@@ -6,6 +6,30 @@ import XCTest
 /// Opt-in renders of the actual SwiftUI view with a temporary, offline library.
 final class WorkspaceSnapshotTests: XCTestCase {
     @MainActor
+    func testRenderAIConnectionsAndComposerActions() async throws {
+        guard let destination = ProcessInfo.processInfo.environment["NATIVEAGENT_SNAPSHOT_DIR"] else { throw XCTSkip("Set NATIVEAGENT_SNAPSHOT_DIR for UI renders.") }
+        _ = NSApplication.shared
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let suite = "NativeAgentAISnapshots.\(UUID())"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let model = WorkspaceViewModel(provider: SettingsTestProvider(), database: try DatabaseActor(url: directory.appendingPathComponent("preview.sqlite3")), files: FileService(), git: GitService(), automaticallyRestore: false, preferences: defaults, credentials: MemoryCredentials(), chatGPTCredentials: MemoryChatGPTCredentials(), aiTokens: MemoryAITokens())
+        for name in ["Claude", "Grok", "DeepSeek"] {
+            try model.saveAIConnection(.init(name: name, baseURL: "https://example.invalid/v1", model: "fixture-model"), token: "fake-token")
+        }
+        model.selectedAIRecipients = Set(model.aiRecipients.prefix(2).map(\.id))
+        try FileManager.default.createDirectory(atPath: destination, withIntermediateDirectories: true)
+        for dark in [true, false] {
+            let suffix = dark ? "dark" : "light"
+            try renderView(ComposerActionsView(dismiss: {}, query: "").environmentObject(model), name: "ai-actions-" + suffix, dark: dark, destination: destination, size: NSSize(width: 580, height: 490))
+            try renderView(AIConnectionsView().environmentObject(model).padding(24), name: "ai-settings-" + suffix, dark: dark, destination: destination, size: NSSize(width: 650, height: 540))
+        }
+        model.draft = "Review this question @"
+        try render(model, name: "ai-composer-workspace", dark: true, destination: destination, size: NSSize(width: 1100, height: 820))
+    }
+
+    @MainActor
     func testScrollLoadsOnlyRequestedHistoryPageAndRendersSkeleton() async throws {
         guard let destination = ProcessInfo.processInfo.environment["NATIVEAGENT_SNAPSHOT_DIR"] else {
             throw XCTSkip("Set NATIVEAGENT_SNAPSHOT_DIR to verify native scrolling and render skeletons.")

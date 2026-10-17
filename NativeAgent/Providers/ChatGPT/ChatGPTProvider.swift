@@ -209,6 +209,9 @@ actor ChatGPTProvider: CodingProvider {
     func startThread(projectPath: String, model: String?) throws -> String { "chatgpt-direct/" + UUID().uuidString }
     /// An isolated text request: no chat events, thread mutation, or tool execution.
     func titleCompletion(instructions: String, input: String, model: String) async throws -> String {
+        try await textCompletion(instructions: instructions, input: input, model: model, maximumCharacters: 8_000)
+    }
+    func textCompletion(instructions: String, input: String, model: String, maximumCharacters: Int = 100_000) async throws -> String {
         guard authenticated else { throw ChatGPTAuth.failure("Connect your ChatGPT account first.") }
         let operation = generation
         let registration = try await validRegistration()
@@ -233,15 +236,15 @@ actor ChatGPTProvider: CodingProvider {
             for try await byte in bytes {
                 try Task.checkCancellation()
                 guard generation == operation else { throw CancellationError() }
-                if let frame = try framer.push(byte), let result = try Self.titleResult(frame) { return result }
+                if let frame = try framer.push(byte), let result = try Self.textResult(frame, maximumCharacters: maximumCharacters) { return result }
             }
-            if let frame = try framer.finish(), let result = try Self.titleResult(frame) { return result }
-            throw ChatGPTAuth.failure("The name suggestion was interrupted. Try again.")
+            if let frame = try framer.finish(), let result = try Self.textResult(frame, maximumCharacters: maximumCharacters) { return result }
+            throw ChatGPTAuth.failure("The text response was interrupted. No automatic retry was made.")
         } catch is CancellationError { throw CancellationError() }
         catch { throw ChatGPTAuth.failure(Self.safeMessage(error)) }
     }
 
-    private static func titleResult(_ frame: String) throws -> String? {
+    private static func textResult(_ frame: String, maximumCharacters: Int) throws -> String? {
         let event = try JSONDecoder().decode(JSONValue.self, from: Data(frame.utf8))
         switch event["type"]?.stringValue {
         case "response.completed":
@@ -250,12 +253,12 @@ actor ChatGPTProvider: CodingProvider {
                 .flatMap { $0["content"]?.arrayValue ?? [] }
                 .filter { $0["type"]?.stringValue == "output_text" }
                 .compactMap { $0["text"]?.stringValue }.joined()
-            guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, text.count <= 8_000 else {
-                throw ChatGPTAuth.failure("AI did not return a usable name suggestion. Try again or enter a name.")
+            guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, text.count <= maximumCharacters else {
+                throw ChatGPTAuth.failure("AI returned no text or exceeded the response size limit.")
             }
             return text
         case "response.failed", "response.incomplete", "error":
-            throw ChatGPTAuth.failure("AI could not finish the name suggestion. Try again or enter a name.")
+            throw ChatGPTAuth.failure("AI could not finish the text response. No automatic retry was made.")
         default: return nil
         }
     }

@@ -2,14 +2,20 @@
 
 ## Current implementation
 
-NativeAgent now uses direct, application-owned ChatGPT browser authorization. No API key or Codex installation is required for this connection. Failures and limits never switch billing modes. Independent Claude/Grok subscription authorization is not configured; account connections fail closed without launching their runtimes.
+NativeAgent uses direct, application-owned ChatGPT browser authorization. No API key or Codex installation is required for this connection. Failures and limits never switch billing modes. Claude and Grok account sign-in runs through their unmodified official runtimes, not an invented browser OAuth flow or copied session tokens.
 
 | Provider | Authentication | Conversation controls |
 | --- | --- | --- |
 | ChatGPT account | Direct browser OAuth + PKCE, application-owned Keychain credentials | Native Responses streaming and cancellation; explicit context and bounded local history; no local tools or remote thread resume |
 | Codex API key (legacy, explicit) | Runtime login RPC with user-supplied API key | JSON-RPC streaming/approvals, gated by installed runtime validation |
-| Claude/Grok account | Independent authorization not configured; no CLI launch | Unavailable in account mode |
+| Claude account | Official Claude Code sign-in in Terminal | Official terminal conversations only; not a shared-chat participant |
+| Grok account | Official Grok Build sign-in | ACP native chat; optional read-only shared-chat review |
 | Claude/Grok API key (legacy, explicit) | User-supplied API key, separate billing | Existing Terminal/ACP adapters; require installed runtimes |
+| API connections | Up to ten user-supplied Keychain tokens, including legacy keys | Direct HTTPS text chat using OpenAI-compatible or Anthropic Messages format; independent multi-AI replies |
+
+Shared-chat reviews send bounded visible text context to explicitly selected recipients after confirmation. HTTP redirects, cookies and shared HTTP credentials are disabled for custom API connections; errors never reflect untrusted server bodies. No API tools or automatic retries are enabled. Grok reviews use its advertised plan mode and deny permission requests, but provider-managed configuration still applies and the chosen folder may be read. This is not a NativeAgent filesystem sandbox. Claude subscription requests are never routed through the direct API adapter.
+
+API implementation references: [OpenAI Chat Completions](https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create), [Claude Messages](https://platform.claude.com/docs/en/api/messages/create), [Claude authentication](https://platform.claude.com/docs/en/manage-claude/authentication), [Grok API](https://docs.x.ai/developers/rest-api-reference/inference), [DeepSeek API](https://api-docs.deepseek.com/). Account integration boundaries: [Claude credential rules](https://code.claude.com/docs/en/legal-and-compliance), [Grok Build integration](https://docs.x.ai/build/overview). Live credentials and billable provider calls are not exercised by the offline test suite.
 
 ## Legacy Codex runtime contract (not used by ChatGPT account sign-in)
 
@@ -29,7 +35,7 @@ References: [App Server](https://learn.chatgpt.com/docs/app-server), [authentica
 
 ## Credentials and process ownership
 
-Direct ChatGPT credentials belong to NativeAgent and stay in its isolated Keychain entry. No CLI token files are opened or copied. For the explicit legacy API-key adapters only, `CODEX_HOME` and `CLAUDE_CONFIG_DIR` identify shared runtime profiles. Disconnect preserves credentials. Legacy runtime sign-out warns that other clients of the shared profile may also be signed out; direct ChatGPT sign-out does not affect Codex.
+Direct ChatGPT credentials belong to NativeAgent and stay in its isolated Keychain entry. No CLI token files are opened or copied. Official-runtime account and legacy API-key adapters use shared runtime profiles. Disconnect preserves credentials. Runtime sign-out warns that other clients of the shared profile may also be signed out; direct ChatGPT sign-out does not affect Codex.
 
 User-supplied API keys are stored in device-only macOS Keychain entries. Codex receives an explicitly chosen key through its supported login RPC; it can also persist that key in its own credential store. Claude receives the selected key through its child environment only. Removing NativeAgent's Keychain entry does not revoke a key or erase the provider's copy.
 

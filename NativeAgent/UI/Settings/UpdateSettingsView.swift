@@ -33,11 +33,11 @@ struct WhatsNewView: View {
     @EnvironmentObject private var updater: AppUpdater
     @Environment(\.dismiss) private var dismiss
     private let highlights = [
-        ("Automatic connection", "Saved accounts connect on launch. Turn this off in Settings → Configuration; no prompts are sent automatically."),
-        ("Lighter chat loading", "Skeleton placeholders, newest messages first, and older pages loaded as you scroll. The timeline keeps at most 200 items loaded."),
-        ("Model and effort picker", "A redesigned picker with an effort slider for models that advertise supported thinking levels."),
-        ("Clearer AI naming", "AI naming requires five user messages and checks the saved chat, even when older messages are not loaded on screen."),
-        ("Subtle navigation highlights", "Only the clicked prompt marker is highlighted, using your selected accent color before fading away.")
+        ("Your API connections", "Add up to ten API tokens in Settings → API connections, securely stored in Keychain. Use OpenAI, Claude, Grok, DeepSeek or compatible custom endpoints."),
+        ("Quick actions with @", "Type @ or use the composer’s @ button to attach files, choose plan mode, open templates or select your AIs."),
+        ("Multiple AIs, one chat", "Ask selected AIs for independent, labeled answers using recent chat context. Review destinations before sending; API usage is billed separately."),
+        ("Controlled parallel replies", "At most two requests run at once. Stop cancels pending work, and one provider’s error does not discard other answers."),
+        ("Official account sign-in", "Grok account connections use its official runtime. Claude subscription conversations stay in official Claude Code; use a Claude API key for shared-chat replies.")
     ]
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {

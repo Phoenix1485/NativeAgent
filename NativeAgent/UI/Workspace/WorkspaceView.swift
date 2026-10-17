@@ -126,9 +126,12 @@ struct WorkspaceView: View {
             }
             HStack(spacing: 6) {
                 Circle().fill(isReady ? Color.green.opacity(0.85) : Color.secondary.opacity(0.5)).frame(width: 5, height: 5)
-                Text(model.isWorking ? model.turnStatus.label : model.connectionStatus.label).font(.system(size: 11))
+                Text(model.isWorking ? model.turnStatus.label : model.selectedAIRecipients.isEmpty ? model.connectionStatus.label : "\(model.selectedAIRecipients.count) AIs selected").font(.system(size: 11))
             }.foregroundStyle(.secondary)
-            Button(isReady ? "Disconnect" : "Connect") { Task { if isReady { await model.disconnect() } else { await model.connect() } } }
+            Button(!model.selectedAIRecipients.isEmpty ? "AI connections" : isReady ? "Disconnect" : "Connect") {
+                if !model.selectedAIRecipients.isEmpty { model.showAIConnections = true }
+                else { Task { if isReady { await model.disconnect() } else { await model.connect() } } }
+            }
                 .font(.system(size: 12, weight: .medium)).buttonStyle(.plain).padding(.horizontal, 12).padding(.vertical, 7)
                 .background(Studio.surface, in: Capsule()).overlay(Capsule().stroke(Studio.line))
                 .disabled(model.connectionStatus == .connecting || model.accountActionInProgress || model.isWorking)

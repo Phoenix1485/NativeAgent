@@ -2,11 +2,12 @@ import AppKit
 import SwiftUI
 
 enum SettingsPage: String, CaseIterable, Identifiable {
-    case accounts = "Accounts", models = "Models", plugins = "Plugins", configuration = "Configuration", appearance = "Appearance", updates = "Updates"
+    case accounts = "Accounts", apiConnections = "API connections", models = "Models", plugins = "Plugins", configuration = "Configuration", appearance = "Appearance", updates = "Updates"
     var id: String { rawValue }
-    var icon: String { switch self { case .accounts: "person.crop.circle"; case .models: "sparkles"; case .plugins: "puzzlepiece.extension"; case .configuration: "slider.horizontal.3"; case .appearance: "paintpalette"; case .updates: "arrow.triangle.2.circlepath" } }
+    var icon: String { switch self { case .accounts: "person.crop.circle"; case .apiConnections: "key.horizontal"; case .models: "sparkles"; case .plugins: "puzzlepiece.extension"; case .configuration: "slider.horizontal.3"; case .appearance: "paintpalette"; case .updates: "arrow.triangle.2.circlepath" } }
     var subtitle: String { switch self {
     case .accounts: "Your accounts. Your choice of intelligence."
+    case .apiConnections: "Up to ten API tokens. One shared conversation."
     case .models: "Keep the models you love. Hide the rest."
     case .plugins: "Trusted tools and data sources through MCP."
     case .configuration: "Decide how your agent works."
@@ -36,7 +37,6 @@ struct SettingsHub: View {
     private var busy: Bool { model.isWorking || model.accountActionInProgress || model.connectionStatus == .connecting }
     private var ready: Bool { if case .ready = model.connectionStatus { true } else { false } }
     private var direct: Bool { kind == .codex && profile.method == .account }
-    private var unsupportedBrowser: Bool { kind != .codex && profile.method == .account }
     private var runtimePath: String? { ProviderExecutable.resolve(kind, configured: profile.binaryPath) }
     private var runtimeAvailable: Bool { runtimePath.map { FileManager.default.isExecutableFile(atPath: $0) } ?? false }
 
@@ -56,7 +56,7 @@ struct SettingsHub: View {
                 }.padding(28)
                 ScrollView {
                     VStack(alignment: .leading, spacing: 20) {
-                        switch page { case .accounts: accounts; case .models: models; case .plugins: MCPSettingsView(manager: model.features.mcp); case .configuration: configuration; case .appearance: appearance; case .updates: UpdateSettingsView() }
+                        switch page { case .accounts: accounts; case .apiConnections: AIConnectionsView(); case .models: models; case .plugins: MCPSettingsView(manager: model.features.mcp); case .configuration: configuration; case .appearance: appearance; case .updates: UpdateSettingsView() }
                     }.padding(.horizontal, 28).padding(.bottom, 28).frame(maxWidth: .infinity, alignment: .leading)
                 }
                 if onboarding { onboardingFooter }
@@ -151,7 +151,7 @@ struct SettingsHub: View {
                             .font(.system(size: 12)).foregroundStyle(.secondary).textSelection(.enabled)
                     }
                     Spacer()
-                    Text(direct ? model.connectionStatus.label : unsupportedBrowser ? "Not available" : runtimeAvailable ? model.connectionStatus.label : "Installation missing").font(.system(size: 10, weight: .medium)).foregroundStyle(ready ? Color.green : Color.secondary)
+                    Text(direct || runtimeAvailable ? model.connectionStatus.label : "Installation missing").font(.system(size: 10, weight: .medium)).foregroundStyle(ready ? Color.green : Color.secondary)
                 }
                 Divider().padding(.vertical, 6)
                 HStack(spacing: 10) {
@@ -159,7 +159,7 @@ struct SettingsHub: View {
                     authChoice(.apiKey, title: "Use API key", subtitle: "Separate API billing", icon: "key")
                 }
                 if profile.method == .account {
-                    Text(direct ? "Authorize NativeAgent in your default browser. Eligible requests use your ChatGPT plan. No Codex app or command-line installation is needed." : "Independent browser subscription authorization is not configured for this provider. NativeAgent will not launch its CLI or claim that visiting its website connects your account.")
+                    Text(direct ? "Authorize NativeAgent in your default browser. Eligible requests use your ChatGPT plan. No Codex app or command-line installation is needed." : kind == .claude ? "Sign in through unmodified Claude Code. Subscription conversations remain in its official terminal, not this app’s shared chat. For Claude replies alongside other AIs here, add a Claude API key in API connections." : "Sign in through the official Grok Build runtime. It opens its own authentication flow and keeps its credentials. After connecting, choose Grok from @ for a shared-chat review.")
                         .font(.system(size: 12)).foregroundStyle(.secondary).lineSpacing(4)
                     if direct, !model.chatGPTAccounts.isEmpty {
                         Picker("ChatGPT account", selection: Binding(get: { model.selectedChatGPTAccount }, set: { id in Task { await model.selectChatGPTAccount(id) } })) {
@@ -174,7 +174,17 @@ struct SettingsHub: View {
                         Spacer()
                         if profile.accountLabel != nil { Button("Sign out…") { confirmSignOut = true }.buttonStyle(.borderless).foregroundStyle(.secondary).disabled(busy) }
                     } }
+                    if !direct {
+                        HStack {
+                            Button(kind == .claude ? "Sign in through Claude Code" : "Sign in through Grok Build") { Task { await model.login() } }
+                                .buttonStyle(.borderedProminent).disabled(busy || !runtimeAvailable)
+                            Button("Reconnect") { Task { await model.connect() } }.disabled(busy || !runtimeAvailable)
+                            if profile.accountLabel != nil { Button("Sign out…") { confirmSignOut = true }.disabled(busy) }
+                        }
+                        Link("Install the official runtime ↗", destination: kind.setupURL).font(.caption)
+                    }
                 } else {
+                    Button("Use direct API chat instead (no CLI required)…") { page = .apiConnections }.foregroundStyle(Studio.accent)
                     Text("API keys are separate from subscription billing. Use a provider-issued API key—not a browser cookie or account password.").font(.system(size: 12)).foregroundStyle(.secondary)
                     HStack {
                         SecureField(model.savedKeyProviders.contains(kind) ? "A key is saved · enter a replacement" : "Paste your API key", text: $key).textFieldStyle(.roundedBorder)
@@ -197,8 +207,6 @@ struct SettingsHub: View {
                     Text("Browser OAuth → NativeAgent → OpenAI Responses API").font(.system(size: 11)).textSelection(.enabled)
                     Text("App-owned authorization in Keychain. Chat and attached context are supported. Local commands and automatic file edits are not enabled in this direct connection.").font(.caption).foregroundStyle(.secondary)
                     Link("Manage ChatGPT plan usage and app access ↗", destination: URL(string: "https://chatgpt.com/settings/usage")!).font(.caption)
-                } else if unsupportedBrowser {
-                    Text("A documented, provider-approved direct authorization flow is required before this app can connect independently.").font(.caption).foregroundStyle(.secondary)
                 } else {
                 Text(model.providerInspection?.binaryPath ?? runtimePath ?? "Executable not found").font(.system(size: 11, design: .monospaced)).textSelection(.enabled)
                 Text("Version: \(model.providerInspection?.version ?? "checked when you connect")").font(.caption).foregroundStyle(.secondary)
@@ -221,7 +229,7 @@ struct SettingsHub: View {
                         }
                     }
                 }
-                if kind == .claude && !unsupportedBrowser {
+                if kind == .claude {
                     Text("Conversations run in the official Claude Code terminal. Select models with /model, continue with /resume, and answer permissions there. NativeAgent’s native chat controls are disabled until verified.").font(.caption).foregroundStyle(.secondary)
                     Button("Open official Claude Code terminal") { Task { await model.openClaudeTerminal() } }.disabled(!ready || busy)
                 }
@@ -234,7 +242,7 @@ struct SettingsHub: View {
                     if model.accountActionInProgress || model.connectionStatus == .notAuthenticated { Button("Cancel") { Task { await model.cancelLogin() } }.buttonStyle(.borderless) }
                 }
             }
-            if !direct && !unsupportedBrowser && !runtimeAvailable {
+            if !direct && !runtimeAvailable {
                 card {
                     Label("Install the runtime once", systemImage: "arrow.down.circle").font(.system(size: 13, weight: .medium))
                     Text("Your custom app uses the provider’s command-line runtime—not its desktop app. It is not bundled or installed automatically.").font(.system(size: 12)).foregroundStyle(.secondary)
