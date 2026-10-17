@@ -33,6 +33,8 @@ struct WhatsNewView: View {
     @EnvironmentObject private var updater: AppUpdater
     @Environment(\.dismiss) private var dismiss
     private let highlights = [
+        ("CLI and model update checks", "Check Claude and Grok versions at startup and at :00 and :30 each hour. Refresh the connected ChatGPT model catalog, see installed/latest CLI versions, or check manually in Settings → Updates."),
+        ("Your own specialist agents", "Configure agents with their own AI connection, instructions and references. Add them through @mentions, or let direct ChatGPT delegate using your chosen approval mode and call limit."),
         ("GitHub in your workspace", "Sign in through GitHub CLI, clone or create repositories, stage and commit changes, push and pull, compare branches, and review or merge pull requests."),
         ("Your configured AIs, where you need them", "Review a diff or selected code, draft a commit or pull request, and compare saved answers with ChatGPT, Grok, Claude API or your custom AI connections. Choose the source and recipients before sending."),
         ("A larger code workspace", "Open multiple file tabs, split code beside your chat, or use a separate window. Add syntax highlighting, change text size and wrapping, jump to a line with ⌘L, and find files with ⌘P."),

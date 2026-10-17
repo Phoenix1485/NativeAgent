@@ -16,7 +16,7 @@ enum SettingsPage: String, CaseIterable, Identifiable {
     case .configuration: "Decide how your agent works."
     case .storage: "Review your library, backups and cached files."
     case .appearance: "A workspace that feels like you."
-    case .updates: "Your version, update status and release highlights."
+    case .updates: "CLI versions, model refreshes and app updates."
     } }
 }
 
@@ -71,7 +71,7 @@ struct SettingsHub: View {
                         case .configuration: configuration
                         case .storage: StorageManagerView(model: model).frame(height: 450)
                         case .appearance: appearance
-                        case .updates: UpdateSettingsView()
+                        case .updates: ProviderUpdatesSettingsView(controller: model.providerUpdates); Divider(); UpdateSettingsView()
                         }
                     }.padding(.horizontal, 28).padding(.bottom, 28).frame(maxWidth: .infinity, alignment: .leading)
                 }

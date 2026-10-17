@@ -83,6 +83,14 @@ Tracking begins with version 0.12.0. Counts come from provider responses, includ
 
 Earlier history, usage in other apps, and Claude Code Terminal sessions cannot be imported as account-wide totals. Missing counts are labeled **Not reported**, including canceled requests whose counters never arrived; a reported zero remains distinct. Model labels identify the model selected for the request. The local ledger stores counts and request metadata, never prompts or credentials, and remains after chats are deleted. Library backups include the ledger; restoring a backup restores usage to that snapshot.
 
+## CLI and model update checks
+
+**Settings → Updates → CLI & model updates** checks at every app launch and at **:00 and :30 of each hour** in your Mac's local time. The setting is on by default and can be disabled. **Check now** runs the same checks immediately without shifting the schedule. While the Mac is asleep or the app is closed, checks do not run; waking an open app performs one catch-up check and resumes the next clock boundary. Clock and time-zone changes recalculate the schedule.
+
+Claude Code and Grok Build checks read known installation metadata first, falling back to a bounded version-only command with automatic updater behavior disabled. The checker compares that version with the provider's public release feed and shows installed/latest versions, errors, last-check time and update-guide links. It never launches Codex or installs software. Use the provider's own updater or package manager, then reconnect. Managed or stable-channel installations may intentionally differ from the newest release.
+
+The same check refreshes the model catalog of an active direct ChatGPT connection. Refreshes wait for active work to finish, preserve model preferences and keep the previous catalog on failure. CLI upgrades do not grant model access: Claude selects account models in its Terminal session, Grok publishes models when a workspace session starts, and custom API model IDs remain in API connections.
+
 ## Files and MCP plugins
 
 - The Files toolbar offers syntax highlighting, 9–28 pt text, line wrapping, and **Go to line** (⌘L). Open files have individual tabs that keep their scroll position and selection while switching. **Quick Open** (⌘P) searches filenames and paths.

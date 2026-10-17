@@ -23,7 +23,7 @@ struct NativeAgentApp: App {
                 .environmentObject(container.viewModel)
                 .environmentObject(updater)
                 .frame(minWidth: 840, maxWidth: .infinity, minHeight: 560, maxHeight: .infinity)
-                .onAppear { appDelegate.viewModel = container.viewModel; updater.start(model: container.viewModel) }
+                .onAppear { appDelegate.viewModel = container.viewModel; updater.start(model: container.viewModel); container.viewModel.providerUpdates.start() }
         }
         .defaultSize(width: 1280, height: 820)
         .windowStyle(.hiddenTitleBar)

@@ -1,6 +1,6 @@
 import Foundation
 
-/// Runs only after an explicit connection/sign-in action. Never invokes a shell.
+/// Runs explicit connection/sign-in actions and the enabled scheduler's version-only probes. Never invokes a shell.
 actor ProviderCommand {
     private let transport = ProcessTransport()
     private var running = false
@@ -9,6 +9,7 @@ actor ProviderCommand {
 
     func run(path: String, arguments: [String], environment: [String: String], timeout: Duration = .seconds(180), workingDirectory: URL? = nil) async throws -> (code: Int32, output: Data) {
         guard !running else { throw NativeAgentError.alreadyRunning }
+        try Task.checkCancellation()
         running = true
         cancelled = false; timedOut = false
         defer { running = false }

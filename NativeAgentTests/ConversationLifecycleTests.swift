@@ -32,18 +32,27 @@ final class ConversationLifecycleTests: XCTestCase {
         defaults.set([project.id.uuidString], forKey: "trustedProjectIDs")
     }
     private func settle() async throws { try await Task.sleep(for: .milliseconds(20)) }
+    private func waitForCompletedPrompts(_ count: Int) async throws {
+        let deadline = ContinuousClock.now.advanced(by: .seconds(2))
+        while ContinuousClock.now < deadline {
+            let prompts = await provider.sentPrompts
+            if prompts.count >= count && !model.isWorking { return }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTFail("The fixture turn did not complete before the deadline.")
+    }
 
     func testExistingChatReadsLatestProjectMemoryAndPinnedInstructionsEverySend() async throws {
         try await readyChat()
         let project = try XCTUnwrap(model.selectedProject), chat = try XCTUnwrap(model.selectedConversation)
         try await database.saveProjectMemory(.init(frameworks: "First framework"), projectID: project.id)
         try await database.saveFeature("Pinned exact requirement", kind: "chat-pins", id: chat.id.uuidString, conversationID: chat.id)
-        model.draft = "First request"; await model.send(); try await settle()
+        model.draft = "First request"; await model.send(); try await waitForCompletedPrompts(1)
         var prompts = await provider.sentPrompts
         XCTAssertTrue(prompts.last?.contains("First framework") == true)
         XCTAssertTrue(prompts.last?.contains("Pinned exact requirement") == true)
         try await database.saveProjectMemory(.init(frameworks: "Updated framework"), projectID: project.id)
-        model.draft = "Next request"; await model.send(); try await settle()
+        model.draft = "Next request"; await model.send(); try await waitForCompletedPrompts(2)
         prompts = await provider.sentPrompts
         XCTAssertTrue(prompts.last?.contains("Updated framework") == true)
         XCTAssertFalse(prompts.last?.contains("First framework") == true)

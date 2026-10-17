@@ -98,6 +98,7 @@ final class WorkspaceViewModel: ObservableObject {
     let settings: AppPreferences
     let aiConnections: AIConnectionStore
     let agents: AgentStore
+    lazy var providerUpdates = ProviderUpdateController(model: self, defaults: preferences)
     @Published var showAgents = false
     private var agentsSubscription: AnyCancellable?
     @Published var selectedAIRecipients: Set<String> = []
@@ -203,6 +204,7 @@ final class WorkspaceViewModel: ObservableObject {
     deinit { eventTask?.cancel(); streamFlushTask?.cancel(); draftSaveTask?.cancel(); maintenanceTask?.cancel() }
 
     func shutdown() async {
+        await providerUpdates.shutdown()
         await assistant.shutdown()
         await github.shutdown()
         startupConnectionAttempted = true
@@ -1063,6 +1065,27 @@ final class WorkspaceViewModel: ObservableObject {
             models = value
             reconcileModelSelection()
         } catch { accountNotice = "The model list could not be refreshed. Connect or sign in and try again." }
+    }
+
+    /// Refresh only an established direct connection; background checks never launch Codex.
+    func refreshModelsForUpdateCheck() async -> ProviderModelRefresh {
+        guard directChatGPT, provider is ChatGPTProvider || injectedProvider else {
+            return .unavailable("ChatGPT models refresh when its direct account connection is active. Claude models are chosen in Terminal; Grok publishes models when a workspace session starts. Custom API models remain configured in API connections.")
+        }
+        if isWorking || accountActionInProgress || modelSwitching || connectionStatus == .connecting { return .deferred }
+        guard case .ready = connectionStatus else { return .unavailable("Connect ChatGPT to refresh the models available to your account. No CLI is needed.") }
+        let generation = providerGeneration, account = accountOperation
+        do {
+            let value = try await provider.loadModels()
+            try Task.checkCancellation()
+            guard generation == providerGeneration, account == accountOperation, directChatGPT else { return .unavailable("Connection changed during the model check. Check again after connecting.") }
+            guard !isWorking, !accountActionInProgress, !modelSwitching else { return .deferred }
+            guard case .ready = connectionStatus else { return .unavailable("Connect ChatGPT to refresh its models.") }
+            settings.mergeCatalog(value, provider: .codex)
+            models = value; reconcileModelSelection()
+            return .refreshed(value.count)
+        } catch is CancellationError { return .unavailable("Model check cancelled.") }
+        catch { return .failed("Could not refresh ChatGPT models. Your saved model list is unchanged; reconnect or check again.") }
     }
 
     func openClaudeTerminal() async {

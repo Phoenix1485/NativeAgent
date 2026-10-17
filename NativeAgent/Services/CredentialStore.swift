@@ -60,7 +60,7 @@ struct KeychainCredentialStore: CredentialStoring {
 enum ProviderExecutable {
     static func resolve(_ kind: ProviderKind, configured: String) -> String? {
         if !configured.isEmpty { return configured }
-        return (["/opt/homebrew/bin", "/usr/local/bin", NSHomeDirectory() + "/.local/bin"] +
+        return (["/opt/homebrew/bin", "/usr/local/bin", NSHomeDirectory() + "/.local/bin"] + (kind == .grok ? [NSHomeDirectory() + "/.grok/bin"] : []) +
                 (ProcessInfo.processInfo.environment["PATH"] ?? "").split(separator: ":").map(String.init).filter { $0.hasPrefix("/") })
             .map { $0 + "/" + kind.executable }.first { FileManager.default.isExecutableFile(atPath: $0) }
     }

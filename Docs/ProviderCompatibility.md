@@ -2,6 +2,12 @@
 
 ## Current implementation
 
+### Scheduled CLI checks
+
+NativeAgent's CLI/model checker runs on launch and local half-hour boundaries, with a manual check in Settings → Updates. It checks Claude Code and Grok Build only; the direct ChatGPT connection refreshes its account catalog without a CLI. Native CLI update instructions follow the providers' [Claude Code setup documentation](https://code.claude.com/docs/en/setup#update-manually) and [Grok CLI reference](https://docs.x.ai/build/cli/reference). Public version pointers are taken from their official installer sources: `https://downloads.claude.ai/claude-code-releases/latest` and `https://x.ai/cli/stable`. No installer script is executed by the checker. Failed checks retain an explicit failure state rather than claiming the installation is current.
+
+### Provider connections
+
 NativeAgent uses direct, application-owned ChatGPT browser authorization. No API key or Codex installation is required for this connection. Failures and limits never switch billing modes. Claude and Grok account sign-in runs through their unmodified official runtimes, not an invented browser OAuth flow or copied session tokens.
 
 | Provider | Authentication | Conversation controls |
