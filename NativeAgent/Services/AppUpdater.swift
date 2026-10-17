@@ -183,7 +183,7 @@ final class AppUpdater: NSObject, ObservableObject, SPUUpdaterDelegate {
 
     var installationMustWait: Bool {
         guard let model else { return false }
-        return model.isWorking || model.accountActionInProgress || model.features.activeTask != nil || model.features.finishingTask
+        return model.isWorking || model.libraryTools.storageBusy || model.accountActionInProgress || model.features.activeTask != nil || model.features.finishingTask
             || model.features.editorHasChanges || model.features.fileSaveInProgress || model.features.importingFiles || !model.features.mcp.connecting.isEmpty
     }
 

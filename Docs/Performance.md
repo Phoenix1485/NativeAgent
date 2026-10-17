@@ -41,6 +41,15 @@ Date: 2026-10-11
 | Global feature search | 40 results/page, 200 ms debounce, SQLite cancellation progress handler |
 | Project-content search | Separate mode; 2,000 candidate files, 1 MiB each, hidden/generated/dependency paths excluded |
 | Report event checkpoint | Coalesced to one second, immediate completion save |
+| Code highlighting | Background lexical pass, capped at 50,000 tokens; stale work is cancelled |
+| File tabs | Text loaded for the selected preview; other tabs retain path, selection and viewport metadata |
+| GitHub lists | 50 repositories per page, 100 commits and 100 open pull requests per refresh |
+| AI review | At most two simultaneous requests; 180 KB input limit, no automatic provider request |
+| Saved-answer comparison | Latest 200 messages plus loaded timeline; 2–6 selected answers, 160 KB combined limit |
+| Storage listing | 50 metadata rows per page; upcoming deletion preview capped at 20 chats |
+| Managed-file inventory | 10,000 inspected entries with a partial-results notice at the limit |
+
+The GitHub workspace refreshes on explicit actions and project selection, with no background polling. Commands drain both output streams concurrently and enforce output limits, cancellation and timeouts. Storage statistics use persisted chat sizes; attachment totals are scanned in batches that yield between queries. Backup and cache cleanup only traverses the app's known directories. Neither opening the storage manager nor reviewing GitHub changes sends content to an AI provider.
 
 The provider starts through account/connection/model selection or the once-per-launch saved-account connection below. Browsing history does not itself start a provider. File/Git scans are deferred until the inspector opens, cached for the selected project, and Git refreshes once at turn completion rather than on every file-change event. Search is debounced by 250 ms. List pages use indexed keyset cursors rather than offsets. History uses indexed received-order cursors. Large-message expansion uses a native text viewport with noncontiguous layout. Library metadata pages accumulate only as requested; timeline payloads remain windowed.
 

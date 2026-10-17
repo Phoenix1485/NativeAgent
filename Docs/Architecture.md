@@ -56,6 +56,14 @@ Recovery normally lasts 30 days. When more than 30 unexpired chats are archived,
 
 The app uses system fonts/colors, selectable text, native controls, dark mode, keyboard shortcuts, and status labels that do not rely on color alone.
 
+File tabs retain lightweight per-file viewport/selection state; only the active document is laid out. The detached native file window shares navigation state but owns its viewport state. Lexical syntax highlighting runs off the main actor with bounded work and stale-result checks. Quick Open uses the existing cancellable file-name/path search.
+
+GitHubController owns observable account/repository state; GitHubService runs explicit Git/official CLI argument vectors through a bounded process runner. Output pipes drain independently, timeouts/cancellation terminate owned children, and credential-bearing environment overrides are stripped. GitHub device authorization uses the official CLI's client/credential storage, not an embedded client secret. Project generations reject stale results. Local changes/history remain available when remote pull-request loading fails. GitHub writes are explicit UI actions; reviewed pull-request head SHAs are required for merges.
+
+WorkspaceAIAssistant reuses the app's configured review recipients and bounded two-request runner. Code/diff/answer requests carry explicit source snapshots and recipient review; they do not inherit unrelated drafts/history or GitHub credentials. Results remain labeled per provider. File and Git operations never execute model output automatically.
+
+LibraryToolsController provides paged storage metadata and message bookmarks in existing conversation-owned feature records. Bookmark source identity is checked against the conversation before saving or navigation. Cleanup rechecks archive state and file identity; backup/cache removal uses descriptor-relative individual-file deletion without following symbolic links.
+
 ## Workspace tools
 
 The toolbar tools menu and Command-K palette share `WorkspaceCommand`. Native panels provide an account/usage dashboard, project profiles, editable global/project templates, explicit next-request context, serial tasks, completion reports, change comparisons, and paged local search. Project and recent-chat switching are available in the palette; older records remain reachable through global search.

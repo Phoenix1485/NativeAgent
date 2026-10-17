@@ -30,6 +30,140 @@ actor DatabaseActor {
     func libraryBackups() throws -> [URL] { try LibrarySnapshots.list(for: url) }
     func stageLibraryRestore(from source: URL) throws { try LibrarySnapshots.stage(source: source, database: url) }
 
+    // MARK: Storage management and saved message bookmarks
+
+    func libraryStorageURL() -> URL { url }
+
+    func libraryStorageSummary() async throws -> LibraryStorageSummary {
+        try ensureInitialized()
+        var summary = try query("SELECT COALESCE(SUM(stored_bytes),0),COUNT(*),COALESCE(SUM(archived_at IS NOT NULL),0) FROM conversations") {
+            LibraryStorageSummary(chatBytes: Int64($0.int(0)), chatCount: $0.int(1), archivedCount: $0.int(2))
+        }.first ?? LibraryStorageSummary()
+        // Bound each JSON scan and yield between batches so large attachments cannot monopolize
+        // the database actor while a task is saving messages. No media is decoded into Swift.
+        var cursor = ""
+        while true {
+            try Task.checkCancellation()
+            let page = try query("""
+            SELECT f.id,COALESCE(SUM(CASE WHEN json_extract(j.value,'$.kind') IN ('attachment','code','fileReference')
+                THEN COALESCE(length(CAST(json_extract(j.value,'$.text') AS BLOB)),0)
+                  + COALESCE(length(CAST(json_extract(j.value,'$.mediaData') AS BLOB)),0) ELSE 0 END),0)
+            FROM (SELECT id,payload FROM feature_records WHERE kind='context' AND conversation_id IS NOT NULL AND id>?
+                  ORDER BY id LIMIT 20) f
+            LEFT JOIN json_each(CASE WHEN json_valid(f.payload) THEN f.payload ELSE '[]' END) j
+            GROUP BY f.id ORDER BY f.id
+            """, [.text(cursor)]) { ($0.text(0), Int64($0.int(1))) }
+            summary.attachmentPayloadBytes += page.reduce(0) { $0 + $1.1 }
+            guard page.count == 20, let last = page.last else { break }
+            cursor = last.0
+            await Task.yield()
+        }
+        return summary
+    }
+
+    func chatStoragePage(query request: ChatStorageQuery = .init(), after: ChatStorageEntry? = nil, limit: Int = 50) throws -> [ChatStorageEntry] {
+        try ensureInitialized()
+        let field = [.largest, .smallest].contains(request.sort) ? "stored_bytes" : "updated_at"
+        let ascending = [.smallest, .oldest].contains(request.sort)
+        let comparison = ascending ? ">" : "<"
+        let direction = ascending ? "ASC" : "DESC"
+        var sql = "SELECT id,project_id,group_id,remote_thread_id,title,created_at,updated_at,provider_id,archived_at,stored_bytes FROM conversations WHERE 1=1"
+        var bindings: [Binding] = []
+        if request.scope == .active { sql += " AND archived_at IS NULL" }
+        if request.scope == .archived { sql += " AND archived_at IS NOT NULL" }
+        if !request.search.isEmpty {
+            sql += " AND instr(lower(title),lower(?))>0"
+            bindings.append(.text(request.search))
+        }
+        if let after {
+            let cursor: Binding = field == "stored_bytes" ? .int(Int(after.storedBytes)) : .double(after.conversation.updatedAt.timeIntervalSince1970)
+            sql += " AND (\(field) \(comparison) ? OR (\(field)=? AND id \(comparison) ?))"
+            bindings += [cursor, cursor, .text(after.id.uuidString)]
+        }
+        sql += " ORDER BY \(field) \(direction),id \(direction) LIMIT ?"
+        bindings.append(.int(max(1, min(100, limit))))
+        let cutoff = Date.now.addingTimeInterval(-TimeInterval(ArchiveRetention.standardDays * 86_400)).timeIntervalSince1970
+        let archivedCount = try query("SELECT COUNT(*) FROM conversations WHERE archived_at > ?", [.double(cutoff)]) { $0.int(0) }.first ?? 0
+        return try query(sql, bindings) { row in
+            let chat = self.storageConversation(row)
+            let bytes = Int64(row.int(9))
+            let date = chat.archivedAt.map { ArchiveRetention.deletionDate(archivedAt: $0, storedBytes: bytes, archiveCount: archivedCount) }
+            return ChatStorageEntry(conversation: chat, storedBytes: bytes, deletionDate: date)
+        }
+    }
+
+    func upcomingArchiveDeletions(limit: Int = 20) throws -> [ChatStorageEntry] {
+        try ensureInitialized()
+        let cutoff = Date.now.addingTimeInterval(-TimeInterval(ArchiveRetention.standardDays * 86_400)).timeIntervalSince1970
+        let count = try query("SELECT COUNT(*) FROM conversations WHERE archived_at > ?", [.double(cutoff)]) { $0.int(0) }.first ?? 0
+        let sql = """
+        SELECT id,project_id,group_id,remote_thread_id,title,created_at,updated_at,provider_id,archived_at,stored_bytes
+        FROM conversations WHERE archived_at IS NOT NULL
+        ORDER BY archived_at + CASE WHEN stored_bytes >= ? AND ? > ? THEN ? ELSE ? END,id LIMIT ?
+        """
+        let bindings: [Binding] = [.int(Int(ArchiveRetention.largeChatBytes)), .int(count), .int(ArchiveRetention.archiveCountThreshold),
+                                   .int(ArchiveRetention.largeChatDays * 86_400), .int(ArchiveRetention.standardDays * 86_400), .int(max(1, min(50, limit)))]
+        return try query(sql, bindings) { row in
+            let chat = self.storageConversation(row), bytes = Int64(row.int(9))
+            return ChatStorageEntry(conversation: chat, storedBytes: bytes,
+                                    deletionDate: chat.archivedAt.map { ArchiveRetention.deletionDate(archivedAt: $0, storedBytes: bytes, archiveCount: count) })
+        }
+    }
+
+    private func storageConversation(_ row: Row) -> Conversation {
+        var chat = Conversation(id: UUID(uuidString: row.text(0))!, projectID: row.optionalText(1).flatMap(UUID.init(uuidString:)),
+                                groupID: row.optionalText(2).flatMap(UUID.init(uuidString:)), remoteThreadID: row.optionalText(3), title: row.text(4),
+                                createdAt: Date(timeIntervalSince1970: row.double(5)), updatedAt: Date(timeIntervalSince1970: row.double(6)))
+        chat.providerID = ProviderKind(rawValue: row.text(7)) ?? .codex
+        chat.archivedAt = row.optionalText(8).map { _ in Date(timeIntervalSince1970: row.double(8)) }
+        return chat
+    }
+
+    func saveMessageBookmark(conversationID: UUID, messageID: UUID, label: String) throws -> MessageBookmark {
+        try ensureInitialized()
+        guard let preview = try query("SELECT substr(display_text,1,300) FROM timeline_items WHERE id=? AND conversation_id=? AND is_streaming=0",
+                                      [.text(messageID.uuidString), .text(conversationID.uuidString)], map: { $0.text(0) }).first else {
+            throw NativeAgentError.unsupported("This message is unavailable or still being written.")
+        }
+        let trimmed = label.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, trimmed.count <= 160 else { throw NativeAgentError.unsupported("Use a bookmark label between 1 and 160 characters.") }
+        let previous = try feature(MessageBookmark.self, kind: "message-bookmark", id: messageID.uuidString)
+        let bookmark = MessageBookmark(messageID: messageID, conversationID: conversationID, label: trimmed, preview: preview, createdAt: previous?.createdAt ?? .now)
+        try saveFeature(bookmark, kind: "message-bookmark", id: messageID.uuidString, title: trimmed, searchText: preview, conversationID: conversationID)
+        return bookmark
+    }
+
+    func messageBookmarkPage(search: String = "", after: MessageBookmark? = nil, limit: Int = 50) throws -> [MessageBookmarkEntry] {
+        try ensureInitialized()
+        var sql = """
+        SELECT f.payload,c.title,c.archived_at,t.id FROM feature_records f
+        JOIN conversations c ON c.id=f.conversation_id
+        LEFT JOIN timeline_items t ON t.id=f.id AND t.conversation_id=f.conversation_id
+        WHERE f.kind='message-bookmark'
+        """
+        var bindings: [Binding] = []
+        if !search.isEmpty {
+            sql += " AND instr(lower(f.title || ' ' || f.search_text || ' ' || c.title),lower(?))>0"
+            bindings.append(.text(search))
+        }
+        if let after {
+            sql += " AND (json_extract(f.payload,'$.createdAt') < ? OR (json_extract(f.payload,'$.createdAt')=? AND f.id < ?))"
+            bindings += [.double(after.createdAt.timeIntervalSinceReferenceDate), .double(after.createdAt.timeIntervalSinceReferenceDate), .text(after.id.uuidString)]
+        }
+        sql += " ORDER BY json_extract(f.payload,'$.createdAt') DESC,f.id DESC LIMIT ?"
+        bindings.append(.int(max(1, min(100, limit))))
+        return try query(sql, bindings) { row in
+            MessageBookmarkEntry(bookmark: try JSONDecoder().decode(MessageBookmark.self, from: Data(row.text(0).utf8)),
+                                 conversationTitle: row.text(1), archived: row.optionalText(2) != nil, messageExists: row.optionalText(3) != nil)
+        }
+    }
+
+    func bookmarkedConversation(messageID: UUID, conversationID: UUID) throws -> Conversation? {
+        try ensureInitialized()
+        guard try query("SELECT 1 FROM timeline_items WHERE id=? AND conversation_id=?", [.text(messageID.uuidString), .text(conversationID.uuidString)], map: { $0.int(0) }).first != nil else { return nil }
+        return try conversation(id: conversationID)
+    }
+
     func conversationMarkdown(_ chat: Conversation) throws -> String {
         try ensureInitialized()
         var result = "# \(chat.title)\n\nExported from NativeAgent. User and assistant messages only.\n\n"

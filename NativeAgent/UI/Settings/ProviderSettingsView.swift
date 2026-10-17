@@ -2,15 +2,17 @@ import AppKit
 import SwiftUI
 
 enum SettingsPage: String, CaseIterable, Identifiable {
-    case accounts = "Accounts", apiConnections = "API connections", models = "Models", plugins = "Plugins", configuration = "Configuration", appearance = "Appearance", updates = "Updates"
+    case accounts = "Accounts", apiConnections = "API connections", github = "GitHub", models = "Models", plugins = "Plugins", configuration = "Configuration", storage = "Storage", appearance = "Appearance", updates = "Updates"
     var id: String { rawValue }
-    var icon: String { switch self { case .accounts: "person.crop.circle"; case .apiConnections: "key.horizontal"; case .models: "sparkles"; case .plugins: "puzzlepiece.extension"; case .configuration: "slider.horizontal.3"; case .appearance: "paintpalette"; case .updates: "arrow.triangle.2.circlepath" } }
+    var icon: String { switch self { case .accounts: "person.crop.circle"; case .apiConnections: "key.horizontal"; case .github: "point.3.connected.trianglepath.dotted"; case .models: "sparkles"; case .plugins: "puzzlepiece.extension"; case .configuration: "slider.horizontal.3"; case .storage: "externaldrive"; case .appearance: "paintpalette"; case .updates: "arrow.triangle.2.circlepath" } }
     var subtitle: String { switch self {
     case .accounts: "Your accounts. Your choice of intelligence."
     case .apiConnections: "Up to ten API tokens. One shared conversation."
+    case .github: "Connect GitHub and manage your repositories."
     case .models: "Keep the models you love. Hide the rest."
     case .plugins: "Trusted tools and data sources through MCP."
     case .configuration: "Decide how your agent works."
+    case .storage: "Review your library, backups and cached files."
     case .appearance: "A workspace that feels like you."
     case .updates: "Your version, update status and release highlights."
     } }
@@ -56,7 +58,17 @@ struct SettingsHub: View {
                 }.padding(28)
                 ScrollView {
                     VStack(alignment: .leading, spacing: 20) {
-                        switch page { case .accounts: accounts; case .apiConnections: AIConnectionsView(); case .models: models; case .plugins: MCPSettingsView(manager: model.features.mcp); case .configuration: configuration; case .appearance: appearance; case .updates: UpdateSettingsView() }
+                        switch page {
+                        case .accounts: accounts
+                        case .apiConnections: AIConnectionsView()
+                        case .github: GitHubAccountView(controller: model.github).task { await model.github.refreshAuth() }; Button("Open GitHub workspace") { model.features.execute(.github) }
+                        case .models: models
+                        case .plugins: MCPSettingsView(manager: model.features.mcp)
+                        case .configuration: configuration
+                        case .storage: StorageManagerView(model: model).frame(height: 450)
+                        case .appearance: appearance
+                        case .updates: UpdateSettingsView()
+                        }
                     }.padding(.horizontal, 28).padding(.bottom, 28).frame(maxWidth: .infinity, alignment: .leading)
                 }
                 if onboarding { onboardingFooter }

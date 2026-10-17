@@ -5,6 +5,7 @@ struct FeaturePanel: View {
     @EnvironmentObject private var model: WorkspaceViewModel
     @ObservedObject var features: WorkspaceFeaturesController
     @Environment(\.openSettings) private var openSettings
+    @State private var codeRequest: AIAssistanceRequest?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -29,11 +30,18 @@ struct FeaturePanel: View {
                     else { Text("Select a chat to manage its memory.") }
                 case .queue: TaskQueuePanel(features: features)
                 case .search: WorkspaceSearchPanel(features: features)
+                case .github: GitHubWorkspaceView(model: model, controller: model.github)
+                case .storage: StorageManagerView(model: model)
+                case .bookmarks: MessageBookmarksView(model: model)
+                case .compareAnswers: AIComparisonView(model: model, assistant: model.assistant)
                 case .selectedCode: selectedCode
                 default: Text("Choose a workspace command.")
                 }
             }.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        }.padding(24).frame(width: 760, height: 650).background(Studio.canvas)
+        }.padding(24).frame(width: features.panel == .github ? 1060 : 760, height: features.panel == .github ? 740 : 650).background(Studio.canvas)
+            .sheet(item: $codeRequest) { request in
+                AIAssistanceView(assistant: model.assistant, request: request).environmentObject(model)
+            }
     }
 
     private var dashboard: some View {
@@ -95,9 +103,13 @@ struct FeaturePanel: View {
 
     private var selectedCode: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Select text in the Files preview. These actions prepare a draft with the exact selection and line range; they do not send or edit files.").foregroundStyle(.secondary)
-            ForEach(["Explain this code", "Review for bugs", "Suggest improvements", "Refactor", "Generate tests", "Generate documentation"], id: \.self) { action in
-                Button(action) { Task { await features.prepareCodeAction(action) } }.disabled(features.selectedCode.isEmpty || !model.providerCapabilities.structuredStreaming)
+            Text("Select text in the Files preview, then choose an action and the AI connections to use. Review the selected source before sending.").foregroundStyle(.secondary)
+            ForEach([AIAssistanceRequest.Purpose.explain, .review, .improve, .refactor, .tests, .documentation]) { purpose in
+                Button(purpose.rawValue) {
+                    let lines = features.selectedLines.map { ":\($0.lowerBound)–\($0.upperBound)" } ?? ""
+                    codeRequest = .init(purpose: purpose, source: (model.filePreview?.relativePath ?? "Selected code") + lines,
+                                        content: features.selectedCode, projectPath: model.selectedProject?.canonicalPath)
+                }.disabled(features.selectedCode.isEmpty || model.isWorking)
             }
         }
     }

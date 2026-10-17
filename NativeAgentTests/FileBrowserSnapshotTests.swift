@@ -5,6 +5,51 @@ import XCTest
 
 final class FileBrowserSnapshotTests: XCTestCase {
     @MainActor
+    func testSwitchingFileTabsRestoresViewportAndSelection() async throws {
+        _ = NSApplication.shared
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = "import SwiftUI\n" + Array(repeating: "let source = \"" + String(repeating: "wide code ", count: 60) + "\"", count: 120).joined(separator: "\n")
+        try Data(source.utf8).write(to: root.appendingPathComponent("First.swift"))
+        try Data("import SwiftUI\nlet second = 2".utf8).write(to: root.appendingPathComponent("Second.swift"))
+        let suite = "FileTabTests.\(UUID())"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let model = WorkspaceViewModel(provider: SettingsTestProvider(), database: try DatabaseActor(url: root.appendingPathComponent(".library.sqlite3")), files: FileService(), git: GitService(), automaticallyRestore: false, preferences: defaults, credentials: MemoryCredentials(), chatGPTCredentials: MemoryChatGPTCredentials(), aiTokens: MemoryAITokens())
+        model.selectedProject = Project(name: "Example", canonicalPath: root.path)
+        let first = FileNode(id: "First.swift", name: "First.swift", relativePath: "First.swift", isDirectory: false, isSymbolicLink: false)
+        let second = FileNode(id: "Second.swift", name: "Second.swift", relativePath: "Second.swift", isDirectory: false, isSymbolicLink: false)
+        await model.setInspectorVisible(true)
+        await model.selectFile(first)
+        let browser = FileBrowserState(preferences: defaults)
+        let view = NSHostingView(rootView: FileBrowserView(browser: browser, expanded: true).environmentObject(model))
+        let window = NSWindow(contentRect: NSRect(x: 100, y: 100, width: 1100, height: 600), styleMask: [.titled], backing: .buffered, defer: false)
+        window.contentView = view; window.orderFront(nil)
+        defer { window.orderOut(nil) }
+        await settle(view)
+        let original = try XCTUnwrap(findTextView(in: view))
+        let originalScroll = try XCTUnwrap(original.enclosingScrollView)
+        original.setSelectedRange(NSRange(location: 0, length: 14))
+        originalScroll.contentView.scroll(to: NSPoint(x: 200, y: 500))
+        originalScroll.reflectScrolledClipView(originalScroll.contentView)
+        let origin = originalScroll.contentView.bounds.origin
+        await model.selectFile(second)
+        await settle(view)
+        XCTAssertEqual(try XCTUnwrap(findTextView(in: view)).string, "import SwiftUI\nlet second = 2")
+        XCTAssertEqual(browser.openFiles.map(\.id), [first.id, second.id])
+        await model.selectFile(first)
+        await settle(view)
+        let restored = try XCTUnwrap(findTextView(in: view))
+        let restoredScroll = try XCTUnwrap(restored.enclosingScrollView)
+        XCTAssertEqual(restored.string, source)
+        XCTAssertEqual(restored.selectedRange(), NSRange(location: 0, length: 14))
+        XCTAssertEqual(restoredScroll.contentView.bounds.minX, origin.x, accuracy: 1)
+        XCTAssertEqual(restoredScroll.contentView.bounds.minY, origin.y, accuracy: 1)
+        await model.shutdown()
+    }
+
+    @MainActor
     func testCompactAndExpandedFileBrowser() async throws {
         guard let destination = ProcessInfo.processInfo.environment["NATIVEAGENT_SNAPSHOT_DIR"] else {
             throw XCTSkip("Set NATIVEAGENT_SNAPSHOT_DIR to render the file browser.")
@@ -26,7 +71,7 @@ final class FileBrowserSnapshotTests: XCTestCase {
         await model.setInspectorVisible(true)
         let node = FileNode(id: "src/WelcomeView.swift", name: "WelcomeView.swift", relativePath: "src/WelcomeView.swift", isDirectory: false, isSymbolicLink: false)
         await model.selectFile(node)
-        let browser = FileBrowserState()
+        let browser = FileBrowserState(preferences: defaults)
         browser.expandedPaths = ["src"]
         try FileManager.default.createDirectory(atPath: destination, withIntermediateDirectories: true)
 
@@ -86,11 +131,37 @@ final class FileBrowserSnapshotTests: XCTestCase {
         browser.showingTab = true
         try await Task.sleep(for: .milliseconds(100))
         XCTAssertTrue(findTextView(in: workspace) === openedText, "Switching tabs retains the open code view.")
+        browser.splitWithChat = true
+        await settle(workspace)
+        let splitText = try XCTUnwrap(findTextView(in: workspace))
+        XCTAssertGreaterThan(try XCTUnwrap(splitText.enclosingScrollView).frame.width, 240)
+        XCTAssertTrue(splitText === openedText, "Opening the chat split retains the native code view.")
+        try save(workspace, name: "files-workspace-split", destination: destination)
+        browser.splitWithChat = false
+        let detached = DetachedFilesWindow()
+        detached.open(model: model, browser: browser)
+        XCTAssertTrue(detached.isVisible)
+        if let detachedWindow = NSApp.windows.first(where: { $0.title == "Files — NativeAgent" }), let content = detachedWindow.contentView {
+            await settle(content)
+            XCTAssertEqual(try XCTUnwrap(findTextView(in: content)).string, code)
+            try save(content, name: "files-detached", destination: destination)
+            detachedWindow.close()
+        } else { XCTFail("A separate native file window must open.") }
+        XCTAssertFalse(detached.isVisible)
         browser.closeTab()
         try await Task.sleep(for: .milliseconds(100))
         XCTAssertFalse(browser.tabOpen)
         XCTAssertFalse(browser.showingTab)
         await model.shutdown()
+    }
+
+    @MainActor
+    private func settle(_ view: NSView) async {
+        for _ in 0..<4 {
+            view.layoutSubtreeIfNeeded()
+            view.window?.displayIfNeeded()
+            try? await Task.sleep(for: .milliseconds(30))
+        }
     }
 
     @MainActor

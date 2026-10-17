@@ -10,6 +10,7 @@ struct ChangesView: View {
                     Label(model.gitSnapshot.branch, systemImage: "point.3.connected.trianglepath.dotted")
                         .font(.caption).lineLimit(1)
                     Spacer()
+                    Button { model.features.execute(.github) } label: { Image(systemName: "arrow.up.right.square") }.buttonStyle(.plain).help("Open GitHub workspace")
                     Button { Task { await model.refreshGit() } } label: { Image(systemName: "arrow.clockwise") }.buttonStyle(.plain)
                 }.padding(8)
                 Divider()

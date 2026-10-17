@@ -67,6 +67,10 @@ ChatGPT accounts use NativeAgent’s existing browser authorization. Grok accoun
 
 ## Files and MCP plugins
 
+- The Files toolbar offers syntax highlighting, 9–28 pt text, line wrapping, and **Go to line** (⌘L). Open files have individual tabs that keep their scroll position and selection while switching. **Quick Open** (⌘P) searches filenames and paths.
+- **Chat + code** keeps the conversation beside a resizable file view. **Open in separate window** provides another native window with the same file tabs and navigator, and its own scroll position.
+- Select code and use its actions menu to explain, review, refactor, or propose tests/documentation with configured AI connections. Review the exact excerpt and recipients before sending; suggested code is not automatically saved.
+
 - **Files → Open in tab** opens a wide, resizable code view with the file navigator on the right. Switch between **Chat** and **Files** without closing either tab. Search matches names and paths inside collapsed folders; the file-type menu filters code, documents, or images. **Find** (or `⌘F` while the code view is focused) searches within the open file. File search skips hidden/generated folders and symbolic links, with an explicit partial-results notice for large or unreadable projects.
 - **Attach** in the composer, or drop local files onto it. Up to 24 context items: UTF-8 text/code (1 MiB total) plus PNG/JPEG/WebP/non-animated GIF and unlocked PDFs (8 MiB each, 12 MiB media total; PDFs 1–50 pages, images up to 40 megapixels). Media has native previews and is sent as inline binary input through direct ChatGPT, subject to the selected model's support. Other connections reject media explicitly. No Files upload API is used. Files may be outside the workspace when explicitly selected. Snapshots persist with the conversation and are sent with subsequent messages until removed; changes on disk require a refreshed attachment.
 - Click an attachment to preview or edit it. **Edit…** in the workspace file browser also opens the complete file (never a truncated preview). **Save file** writes explicitly, checks the original bytes, rejects symlink swaps/concurrent changes, and preserves file mode. Unsaved changes prevent an updater restart and prompt on quit.
@@ -78,6 +82,25 @@ ChatGPT accounts use NativeAgent’s existing browser authorization. Grok accoun
 Protocol references: [SIWC limitations](https://developers.openai.com/siwc/token-sharing-open-source/preview-limitations), [Responses function namespaces](https://developers.openai.com/api/docs/guides/function-calling), [MCP stdio lifecycle](https://modelcontextprotocol.io/specification/2025-06-18/basic/lifecycle). The client negotiates MCP 2025-06-18, 2025-03-26 or 2024-11-05. Tests use offline HTTP and stdio fixtures; they do not establish live account/model compatibility.
 
 The first turn in each project requires an explicit trust confirmation because repositories may contain agent instructions, hooks, and executable configuration.
+
+## GitHub workspace
+
+Open the GitHub button in the workspace toolbar, **Agent → GitHub workspace**, or **Settings → GitHub**. Install the [official GitHub CLI](https://cli.github.com/) if needed; NativeAgent finds Homebrew's usual locations or lets you choose the **gh** executable. **Sign in with GitHub** opens GitHub's device authorization page and displays the one-time code. This uses GitHub CLI's account and credential storage, shared with other clients of that CLI. NativeAgent does not ask for or expose a GitHub token; the connection screen reports whether CLI credentials are in Keychain.
+
+- Browse repositories with paging, clone into a new local folder, create a new project, or publish an existing folder. New repositories default to private. Creating/publishing links the local folder and remote; it does not automatically stage, commit or upload files.
+- **Changes** shows working/staged files, diffs, individual stage/unstage controls, and a commit-message editor. Review and commit locally, then explicitly **Push**. **Fetch** updates remote references; **Pull** permits only fast-forward updates from the tracking branch.
+- **History** shows recent commits and their diffs. **Branches** creates/switches branches, compares local or fetched remote references, and merges into the current branch. A local merge requires a clean working tree; conflicts stay visible until resolved and committed or explicitly aborted.
+- **Pull requests** lists open requests, shows their diffs, creates draft or ready requests from pushed branches, and merges after confirmation. GitHub branch rules apply; merging is bound to the reviewed head commit. No force push, automatic reset, or administrator override is provided.
+- **Ask AI** reviews the displayed diff, explains merge risks, or drafts a commit message/pull-request description. Choose connected ChatGPT/Grok accounts or configured Claude, OpenAI-compatible, and custom APIs. AI receives the displayed source after you choose Send; GitHub credentials are never included. Suggestions do not execute repository operations. Claude account-only sessions remain in official Terminal; add a Claude API connection for these integrated reviews.
+
+Repository commands use bounded, cancellable processes. A canceled network operation may already have completed remotely; refresh before retrying. GitHub authentication failure does not hide local status/history. Only github.com account operations are supported in this version.
+
+## Bookmarks, answer comparison and storage
+
+- Use the bookmark icon on a completed message to save a label. **Agent → Message bookmarks** searches labels/excerpts, edits labels, and jumps to the original message. An archived chat must be restored to open it; permanently deleting a chat also deletes its bookmarks.
+- **Agent → Compare AI answers** or a reply's context menu opens saved answers side by side. Choose two to six and optionally ask selected AIs to combine them or identify disagreements. The comparison lists the latest 200 messages plus answers in the currently loaded history; full selected text is loaded on request. Oversized inputs are rejected rather than silently shortened.
+- **Settings → Storage** or **Agent → Storage manager** shows chat payloads, attachment payloads, database size, backups and caches. Sort/filter chats, archive selected active chats, or permanently delete selected archived chats after confirmation. The open chat and running chats are protected. The upcoming-deletions list shows conditional archive eligibility dates.
+- Backup/cache cleanup selects individual files in the app's own storage. Changed files and symbolic links are rejected. Attachment payload size is already included in chat size; SQLite free pages may be reused without immediately reducing the database file.
 
 ## Memory, retries, backups and updates (0.7)
 

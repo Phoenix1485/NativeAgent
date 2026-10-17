@@ -528,7 +528,7 @@ final class WorkspaceFeaturesController: ObservableObject {
     func canExecute(_ command: WorkspaceCommand) -> Bool {
         switch command {
         case .profiles: return model?.selectedProject != nil && model?.isWorking == false
-        case .selectedCode: return !selectedCode.isEmpty && model?.providerCapabilities.structuredStreaming == true
+        case .selectedCode: return !selectedCode.isEmpty && model?.isWorking == false
         default: return true
         }
     }

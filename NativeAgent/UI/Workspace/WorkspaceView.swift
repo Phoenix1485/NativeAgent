@@ -9,6 +9,7 @@ struct WorkspaceView: View {
     @State private var showConversationDetails = false
     @State private var showSidebar = true
     @StateObject private var fileBrowser: FileBrowserState
+    @StateObject private var detachedFiles = DetachedFilesWindow()
     @State private var availableWidth: CGFloat = 1280
     @Environment(\.openSettings) private var openSettings
 
@@ -29,7 +30,10 @@ struct WorkspaceView: View {
                 if model.features.paletteVisible { WorkspaceCommandPalette(features: model.features).environmentObject(model) }
                 else { FeaturePanel(features: model.features).environmentObject(model) }
             }
-            .task(id: showInspector || fileBrowser.showingTab) { await model.setInspectorVisible(showInspector || fileBrowser.showingTab) }
+            .task(id: showInspector || fileBrowser.showingTab || detachedFiles.isVisible) {
+                await model.setInspectorVisible(showInspector || fileBrowser.showingTab || detachedFiles.isVisible)
+            }
+            .sheet(isPresented: $fileBrowser.quickOpenVisible) { QuickOpenFilesView(browser: fileBrowser).environmentObject(model) }
             .onChange(of: model.selectedProject?.id) { fileBrowser.reset() }
             .onChange(of: fileBrowser.showingTab) { NSApp.keyWindow?.makeFirstResponder(nil) }
             .background(GeometryReader { proxy in
@@ -54,16 +58,18 @@ struct WorkspaceView: View {
                     workspaceTabs
                     Divider()
                 }
-                ZStack {
+                HSplitView {
                     ConversationView()
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        .opacity(fileBrowser.showingTab ? 0 : 1)
-                        .allowsHitTesting(!fileBrowser.showingTab)
-                        .accessibilityHidden(fileBrowser.showingTab)
+                        .frame(minWidth: conversationVisible ? 320 : 0, idealWidth: conversationVisible ? 450 : 0,
+                               maxWidth: conversationVisible ? .infinity : 0, maxHeight: .infinity)
+                        .frame(width: conversationVisible ? nil : 0)
+                        .clipped().opacity(conversationVisible ? 1 : 0)
+                        .allowsHitTesting(conversationVisible)
+                        .accessibilityHidden(!conversationVisible)
                     if fileBrowser.tabOpen {
                         Group {
                             if model.selectedProject != nil {
-                                FileBrowserView(browser: fileBrowser, expanded: true, active: fileBrowser.showingTab)
+                                FileBrowserView(browser: fileBrowser, expanded: true, active: fileBrowser.showingTab, onDetach: openDetachedFiles)
                             } else {
                                 ContentUnavailableView {
                                     Label("Choose a working folder", systemImage: "folder")
@@ -74,14 +80,14 @@ struct WorkspaceView: View {
                                 }
                             }
                         }
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .frame(minWidth: fileBrowser.showingTab ? 500 : 0, maxWidth: fileBrowser.showingTab ? .infinity : 0, maxHeight: .infinity)
                         .frame(width: fileBrowser.showingTab ? nil : 0, height: fileBrowser.showingTab ? nil : 0)
                         .clipped().opacity(fileBrowser.showingTab ? 1 : 0)
                         .allowsHitTesting(fileBrowser.showingTab)
                         .accessibilityHidden(!fileBrowser.showingTab)
                     }
                 }.frame(maxWidth: .infinity, maxHeight: .infinity)
-                if showDiagnostics && !fileBrowser.showingTab {
+                if showDiagnostics && conversationVisible {
                     VStack(alignment: .leading, spacing: 8) {
                         HStack {
                             Label("Activity log", systemImage: "terminal").font(.caption.weight(.medium))
@@ -110,7 +116,7 @@ struct WorkspaceView: View {
                     } else if inspectorTab == "Files" {
                         FileBrowserView(browser: fileBrowser, onExpand: {
                             fileBrowser.openTab()
-                        }).frame(maxHeight: .infinity)
+                        }, onDetach: openDetachedFiles).frame(maxHeight: .infinity)
                     }
                     else { ChangesView().frame(maxHeight: .infinity) }
                 }.frame(width: 300).frame(maxHeight: .infinity).background(Studio.sidebar)
@@ -137,6 +143,14 @@ struct WorkspaceView: View {
             }.padding(.trailing, 4)
                 .background(fileBrowser.showingTab ? Studio.hover : Color.clear, in: RoundedRectangle(cornerRadius: 6))
             Spacer()
+            Button {
+                fileBrowser.showingTab = true
+                fileBrowser.splitWithChat.toggle()
+            } label: {
+                Label(fileBrowser.splitWithChat ? "Code only" : "Chat + code", systemImage: "rectangle.split.2x1")
+            }.help("Show the conversation beside code with resizable panels")
+            Button(action: openDetachedFiles) { Image(systemName: "macwindow.on.rectangle") }
+                .padding(.horizontal, 8).help("Open files in a separate window").accessibilityLabel("Open files in a separate window")
         }.font(.system(size: 12, weight: .medium)).buttonStyle(.plain)
             .padding(.horizontal, 12).padding(.vertical, 6).background(Studio.sidebar)
     }
@@ -190,7 +204,7 @@ struct WorkspaceView: View {
             }
             HStack(spacing: 6) {
                 Circle().fill(isReady ? Color.green.opacity(0.85) : Color.secondary.opacity(0.5)).frame(width: 5, height: 5)
-                Text(model.isWorking ? model.turnStatus.label : model.selectedAIRecipients.isEmpty ? model.connectionStatus.label : "\(model.selectedAIRecipients.count) AIs selected").font(.system(size: 11))
+                Text(model.github.busy ? "GitHub operation" : model.assistant.isRunning ? "AI review" : model.isWorking ? model.turnStatus.label : model.selectedAIRecipients.isEmpty ? model.connectionStatus.label : "\(model.selectedAIRecipients.count) AIs selected").font(.system(size: 11))
             }.foregroundStyle(.secondary)
             Button(!model.selectedAIRecipients.isEmpty ? "AI connections" : isReady ? "Disconnect" : "Connect") {
                 if !model.selectedAIRecipients.isEmpty { model.showAIConnections = true }
@@ -201,6 +215,11 @@ struct WorkspaceView: View {
                 .disabled(model.connectionStatus == .connecting || model.accountActionInProgress || model.isWorking)
             Rectangle().fill(Studio.line).frame(width: 1, height: 18)
             Button { model.features.paletteVisible = true } label: { Image(systemName: "command") }.buttonStyle(QuietButtonStyle()).help("Command palette (⌘K)").accessibilityLabel("Command palette")
+            Button { model.features.execute(.github) } label: { Image(systemName: "point.3.connected.trianglepath.dotted") }
+                .buttonStyle(QuietButtonStyle()).help("GitHub workspace").accessibilityLabel("GitHub workspace")
+            Button { fileBrowser.quickOpenVisible = true } label: { Image(systemName: "doc.text.magnifyingglass") }
+                .buttonStyle(QuietButtonStyle()).keyboardShortcut("p", modifiers: .command)
+                .disabled(model.selectedProject == nil).help("Quick Open file (⌘P)").accessibilityLabel("Quick Open file")
             Menu {
                 Button("Check for Updates…") { updater.checkForUpdates() }.disabled(!updater.canCheckForUpdates)
                 Link("Download NativeAgent…", destination: AppUpdater.downloadPageURL)
@@ -221,4 +240,7 @@ struct WorkspaceView: View {
     }
 
     private var isReady: Bool { if case .ready = model.connectionStatus { true } else { false } }
+    private var conversationVisible: Bool { !fileBrowser.showingTab || fileBrowser.splitWithChat }
+
+    private func openDetachedFiles() { detachedFiles.open(model: model, browser: fileBrowser) }
 }

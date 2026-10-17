@@ -1,43 +1,31 @@
 import SwiftUI
 
-@MainActor
-final class FileBrowserState: ObservableObject {
-    @Published var tabOpen = false
-    @Published var showingTab = false
-    @Published var query = ""
-    @Published var filter: FileBrowserFilter = .all
-    @Published var expandedPaths: Set<String> = []
-
-    func openTab() { tabOpen = true; showingTab = true }
-    func closeTab() { showingTab = false; tabOpen = false }
-
-    func reset() {
-        query = ""
-        filter = .all
-        expandedPaths = []
-    }
-}
-
 struct FileBrowserView: View {
     @EnvironmentObject private var model: WorkspaceViewModel
     @ObservedObject var browser: FileBrowserState
     var expanded = false
     var active = true
     var onExpand: (() -> Void)?
+    var onDetach: (() -> Void)?
+    var viewportScope = "workspace"
 
     var body: some View {
-        if expanded {
-            HSplitView {
-                FilePreviewPane(active: active).frame(minWidth: 320, maxWidth: .infinity, maxHeight: .infinity)
-                    .layoutPriority(1)
-                navigator.frame(minWidth: 240, idealWidth: 300, maxWidth: 420, maxHeight: .infinity)
-            }
-        } else {
-            VSplitView {
-                navigator.frame(minHeight: 160, idealHeight: 280)
-                FilePreviewPane(active: active).frame(minHeight: 180, maxHeight: .infinity)
+        Group {
+            if expanded {
+                HSplitView {
+                    FilePreviewPane(browser: browser, active: active, onDetach: onDetach, viewportScope: viewportScope)
+                        .frame(minWidth: 260, maxWidth: .infinity, maxHeight: .infinity).layoutPriority(1)
+                    navigator.frame(minWidth: 240, idealWidth: 260, maxWidth: 420, maxHeight: .infinity)
+                }
+            } else {
+                VSplitView {
+                    navigator.frame(minHeight: 160, idealHeight: 280)
+                    FilePreviewPane(browser: browser, active: active, onDetach: onDetach, viewportScope: viewportScope)
+                        .frame(minHeight: 180, maxHeight: .infinity)
+                }
             }
         }
+        .onReceive(model.$selectedFile) { node in if let node { browser.remember(node) } }
     }
 
     private var navigator: some View {
@@ -118,7 +106,7 @@ private struct FileNavigatorView: View {
         } else if let searchError {
             ContentUnavailableView("Search unavailable", systemImage: "exclamationmark.triangle", description: Text(searchError))
         } else if let results, !results.files.isEmpty {
-            List(results.files) { node in FileRow(node: node, showsPath: true) }.listStyle(.sidebar)
+            List(results.files) { node in FileRow(node: node, browser: browser, showsPath: true) }.listStyle(.sidebar)
             Text(results.isTruncated ? "\(results.files.count) files · partial results" : "\(results.files.count) matching files")
                 .font(.caption2).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading).padding(8)
                 .help(results.isTruncated ? "Some files may be omitted because this project is large or a folder could not be read. Browse folders to find more files." : "")
@@ -152,18 +140,45 @@ private struct FileNavigatorView: View {
 
 private struct FilePreviewPane: View {
     @EnvironmentObject private var model: WorkspaceViewModel
+    @ObservedObject var browser: FileBrowserState
     var active: Bool
+    var onDetach: (() -> Void)?
+    var viewportScope: String
     @State private var findRequest = 0
+    @State private var goToLineRequest = 0
+    @State private var requestedLine: Int?
+    @State private var lineInput = ""
+    @State private var showingLinePicker = false
+    @State private var aiRequest: AIAssistanceRequest?
 
     var body: some View {
         VStack(spacing: 0) {
+            if !browser.openFiles.isEmpty { fileTabs; Divider() }
             if let file = model.selectedFile {
                 VStack(alignment: .leading, spacing: 8) {
                     Text(file.relativePath).font(.caption.monospaced()).lineLimit(1).truncationMode(.middle)
                         .help(file.relativePath).frame(maxWidth: .infinity, alignment: .leading)
                     HStack(spacing: 12) {
                         Button { findRequest += 1 } label: { Label("Find", systemImage: "magnifyingglass") }
-                            .disabled(model.filePreview == nil).help("Find in this file (⌘F)")
+                            .disabled(model.filePreview?.text.isEmpty != false).help("Find in this file (⌘F)")
+                        Menu {
+                            Button("Go to line…") { lineInput = ""; showingLinePicker = true }
+                                .keyboardShortcut("l", modifiers: [.command])
+                                .disabled(model.filePreview?.text.isEmpty != false)
+                            Divider()
+                            Toggle("Syntax highlighting", isOn: $browser.syntaxHighlighting)
+                            Toggle("Wrap long lines", isOn: $browser.wrapsLines)
+                            Menu("Text size · \(Int(browser.fontSize)) pt") {
+                                ForEach([9, 10, 11, 12, 13, 14, 16, 18, 20, 24, 28], id: \.self) { size in
+                                    Button("\(size) pt") { browser.fontSize = Double(size) }
+                                }
+                            }
+                            Button("Increase text size") { browser.fontSize = min(28, browser.fontSize + 1) }
+                            Button("Decrease text size") { browser.fontSize = max(9, browser.fontSize - 1) }
+                            if let onDetach { Divider(); Button("Open in separate window", action: onDetach) }
+                        } label: { Image(systemName: "textformat.size") }
+                            .menuStyle(.borderlessButton).fixedSize().help("Code appearance and go to line")
+                            .accessibilityLabel("Code appearance").disabled(!active)
                         Button("Edit…") {
                             guard let root = model.selectedProject?.canonicalPath else { return }
                             Task { await model.features.openFileEditor(URL(fileURLWithPath: root).appendingPathComponent(file.relativePath)) }
@@ -171,12 +186,17 @@ private struct FilePreviewPane: View {
                             .help("Open the complete UTF-8 file in the editor (up to 1 MiB)")
                         Spacer(minLength: 0)
                         Menu {
-                            ForEach(["Explain this code", "Review for bugs", "Suggest improvements", "Refactor", "Generate tests", "Generate documentation"], id: \.self) { action in
-                                Button(action) { Task { await model.features.prepareCodeAction(action) } }
+                            ForEach([AIAssistanceRequest.Purpose.explain, .review, .improve, .refactor, .tests, .documentation]) { purpose in
+                                Button(purpose.rawValue) {
+                                    let lines = model.features.selectedLines.map { ":\($0.lowerBound)–\($0.upperBound)" } ?? ""
+                                    aiRequest = AIAssistanceRequest(purpose: purpose, source: file.relativePath + lines,
+                                        content: model.features.selectedCode, projectPath: model.selectedProject?.canonicalPath)
+                                }
                             }
                         } label: { Image(systemName: "ellipsis.circle") }
                             .menuStyle(.borderlessButton).fixedSize().accessibilityLabel("Code actions")
-                            .disabled(model.features.selectedCode.isEmpty || !model.providerCapabilities.structuredStreaming)
+                            .disabled(model.features.selectedCode.isEmpty || model.isWorking)
+                            .help(model.features.selectedCode.isEmpty ? "Select code to ask your configured AIs about it" : "Ask your configured AIs about the selected code")
                     }.font(.caption).buttonStyle(.borderless)
                 }.padding(10)
                 Divider()
@@ -193,7 +213,11 @@ private struct FilePreviewPane: View {
                         guard active else { return }
                         model.features.selectedCode = text
                         model.features.selectedLines = lines
-                    }, findRequest: findRequest)
+                    }, findRequest: findRequest, filePath: preview.relativePath,
+                       fontSize: browser.fontSize, wrapsLines: browser.wrapsLines,
+                       syntaxHighlighting: browser.syntaxHighlighting,
+                       documentState: browser.documentState(for: preview.relativePath, scope: viewportScope),
+                       goToLine: requestedLine, goToLineRequest: goToLineRequest)
                     .id(preview.relativePath)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .accessibilityLabel("Contents of \(preview.relativePath)")
@@ -205,6 +229,55 @@ private struct FilePreviewPane: View {
                 ContentUnavailableView("Select a file", systemImage: "doc.text.magnifyingglass", description: Text("Choose a file to read its contents."))
             }
         }.frame(maxWidth: .infinity, maxHeight: .infinity).background(Studio.surface)
+            .sheet(item: $aiRequest) { request in AIAssistanceView(assistant: model.assistant, request: request).environmentObject(model) }
+            .popover(isPresented: $showingLinePicker) {
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("Go to line").font(.headline)
+                    TextField("Line number", text: $lineInput).textFieldStyle(.roundedBorder).onSubmit(jumpToLine)
+                    if !lineInput.isEmpty, validLine == nil { Text("Enter a line number in this file.").font(.caption).foregroundStyle(.secondary) }
+                    HStack {
+                        Button("Cancel") { showingLinePicker = false }
+                        Spacer()
+                        Button("Go", action: jumpToLine).disabled(validLine == nil).keyboardShortcut(.defaultAction)
+                    }
+                }.padding(18).frame(width: 260)
+            }
+    }
+
+    private var validLine: Int? {
+        guard let line = Int(lineInput.trimmingCharacters(in: .whitespaces)), let text = model.filePreview?.text,
+              CodeTextView.range(ofLine: line, in: text) != nil else { return nil }
+        return line
+    }
+
+    private func jumpToLine() {
+        guard let line = validLine else { return }
+        requestedLine = line; goToLineRequest += 1; showingLinePicker = false
+    }
+
+    private var fileTabs: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 2) {
+                ForEach(browser.openFiles) { node in
+                    HStack(spacing: 5) {
+                        Button { Task { await model.selectFile(node) } } label: {
+                            Text(node.name).lineLimit(1).padding(.leading, 10).padding(.vertical, 9)
+                        }.help(node.relativePath)
+                        Button {
+                            let wasSelected = model.selectedFile?.relativePath == node.relativePath
+                            let next = browser.closeFile(node, selectedPath: model.selectedFile?.relativePath)
+                            if let next { Task { await model.selectFile(next) } }
+                            else if wasSelected {
+                                model.clearSelectedFile()
+                            }
+                        } label: { Image(systemName: "xmark").font(.system(size: 9)).padding(6) }
+                            .help("Close \(node.name)").accessibilityLabel("Close \(node.name)")
+                    }.padding(.trailing, 4)
+                        .background(model.selectedFile?.id == node.id ? Studio.accent.opacity(0.12) : Color.clear,
+                                    in: RoundedRectangle(cornerRadius: 5))
+                }
+            }.padding(5)
+        }.font(.caption).buttonStyle(.plain).background(Studio.sidebar)
     }
 }
 
@@ -240,7 +313,7 @@ private struct FileTreeNodeView: View {
                 children = loaded
             }
         } else {
-            FileRow(node: node)
+            FileRow(node: node, browser: browser)
         }
     }
 }
@@ -248,10 +321,11 @@ private struct FileTreeNodeView: View {
 private struct FileRow: View {
     @EnvironmentObject private var model: WorkspaceViewModel
     let node: FileNode
+    @ObservedObject var browser: FileBrowserState
     var showsPath = false
 
     var body: some View {
-        Button { Task { await model.selectFile(node) } } label: {
+        Button { browser.remember(node); Task { await model.selectFile(node) } } label: {
             HStack(alignment: .top, spacing: 7) {
                 Image(systemName: node.isSymbolicLink ? "doc.badge.ellipsis" : "doc.text")
                 VStack(alignment: .leading, spacing: 3) {

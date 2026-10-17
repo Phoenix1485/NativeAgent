@@ -16,6 +16,9 @@ struct TimelineItemView: View {
                 Text(item.title).font(.system(size: 12, weight: .semibold))
                 if item.isStreaming { ProgressView().controlSize(.small) }
                 Spacer()
+                if !item.isStreaming, let chat = model.selectedConversation {
+                    MessageBookmarkButton(entry: item, conversationID: chat.id)
+                }
                 if model.settings.showTimestamps { Text(item.createdAt, style: .time).font(.caption).foregroundStyle(.tertiary) }
             }
             if item.kind == .command {
@@ -57,6 +60,12 @@ struct TimelineItemView: View {
                 Button("Branch with selected context…") { Task { await model.features.branch(at: item) } }.disabled(model.isWorking)
             }
             Button("Task reports") { model.features.execute(.reports) }
+            if item.kind == .agentMessage && !item.isStreaming {
+                Button("Compare this answer…") {
+                    model.assistant.comparisonSelection.insert(item.id)
+                    model.features.execute(.compareAnswers)
+                }
+            }
         }
         .onDisappear { fullText = nil }
         .sheet(isPresented: $editingPrompt) { EditPromptView(item: item).environmentObject(model) }

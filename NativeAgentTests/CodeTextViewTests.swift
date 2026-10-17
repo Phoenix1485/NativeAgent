@@ -150,6 +150,97 @@ final class CodeTextViewTests: XCTestCase {
         XCTAssertNil(lines)
     }
 
+    func testAppearanceControlsWrapWithoutLosingTextAndApplySyntaxColors() async throws {
+        let code = "let greeting = \"https://example.com🙂\" // a comment\n" + String(repeating: "print(greeting); ", count: 70)
+        let window = makeWindow(CodeTextView(text: code, filePath: "Example.swift"))
+        defer { window.orderOut(nil) }
+        await settle(window)
+        let hosting = try XCTUnwrap(window.contentView as? NSHostingView<CodeTextView>)
+        let scroll = try XCTUnwrap(find(NSScrollView.self, in: hosting))
+        let text = try XCTUnwrap(scroll.documentView as? NSTextView)
+        let initialHeight = text.frame.height
+        text.setSelectedRange((code as NSString).range(of: "greeting"))
+        hosting.rootView = CodeTextView(text: code, filePath: "Example.swift", fontSize: 18, wrapsLines: true)
+        await settle(window)
+        XCTAssertEqual(text.string, code)
+        XCTAssertEqual(text.font?.pointSize, 18)
+        XCTAssertFalse(scroll.hasHorizontalScroller)
+        XCTAssertEqual(text.frame.width, viewportSize(scroll).width, accuracy: 1)
+        XCTAssertGreaterThan(text.frame.height, initialHeight)
+        XCTAssertEqual(text.selectedRange(), (code as NSString).range(of: "greeting"))
+        XCTAssertEqual(text.textStorage?.attribute(.foregroundColor, at: 0, effectiveRange: nil) as? NSColor, .systemPurple)
+        let urlOffset = (code as NSString).range(of: "https://").location
+        XCTAssertEqual(text.textStorage?.attribute(.foregroundColor, at: urlOffset, effectiveRange: nil) as? NSColor, .systemGreen)
+        hosting.rootView = CodeTextView(text: code, filePath: "Example.swift", fontSize: 18, wrapsLines: true, syntaxHighlighting: false)
+        await settle(window)
+        XCTAssertEqual(text.textStorage?.attribute(.foregroundColor, at: 0, effectiveRange: nil) as? NSColor, .textColor)
+    }
+
+    func testRecreatingFileViewRestoresItsOwnViewportAndSelection() async throws {
+        let source = Array(repeating: String(repeating: "file contents ", count: 60), count: 120).joined(separator: "\n")
+        let state = CodeDocumentState()
+        let first = makeWindow(CodeTextView(text: source, documentState: state))
+        await settle(first)
+        let scroll = try XCTUnwrap(find(NSScrollView.self, in: first.contentView!))
+        let text = try XCTUnwrap(scroll.documentView as? NSTextView)
+        text.setSelectedRange(NSRange(location: 15, length: 12))
+        scroll.contentView.scroll(to: NSPoint(x: 220, y: 500))
+        scroll.reflectScrolledClipView(scroll.contentView)
+        let origin = scroll.contentView.bounds.origin
+        XCTAssertEqual(state.scrollOrigin, origin)
+        first.orderOut(nil)
+        first.contentView = nil
+
+        let restored = makeWindow(CodeTextView(text: source, documentState: state))
+        defer { restored.orderOut(nil) }
+        await settle(restored)
+        let restoredScroll = try XCTUnwrap(find(NSScrollView.self, in: restored.contentView!))
+        let restoredText = try XCTUnwrap(restoredScroll.documentView as? NSTextView)
+        XCTAssertEqual(restoredScroll.contentView.bounds.minX, origin.x, accuracy: 1)
+        XCTAssertEqual(restoredScroll.contentView.bounds.minY, origin.y, accuracy: 1)
+        XCTAssertEqual(restoredText.selectedRange(), NSRange(location: 15, length: 12))
+    }
+
+    func testEnablingWrapAfterHorizontalScrollKeepsFirstColumnVisible() async throws {
+        let source = Array(repeating: "let value = \"" + String(repeating: "long source ", count: 60) + "\"", count: 100).joined(separator: "\n")
+        let window = makeWindow(CodeTextView(text: source))
+        defer { window.orderOut(nil) }
+        await settle(window)
+        let hosting = try XCTUnwrap(window.contentView as? NSHostingView<CodeTextView>)
+        let scroll = try XCTUnwrap(find(NSScrollView.self, in: hosting))
+        let text = try XCTUnwrap(scroll.documentView as? NSTextView)
+        let selected = NSRange(location: 0, length: 9)
+        text.setSelectedRange(selected)
+        scroll.contentView.scroll(to: NSPoint(x: 500, y: 500))
+        scroll.reflectScrolledClipView(scroll.contentView)
+        hosting.rootView = CodeTextView(text: source, wrapsLines: true)
+        await settle(window)
+        XCTAssertEqual(scroll.contentView.bounds.minX, -scroll.contentView.contentInsets.left, accuracy: 1)
+        XCTAssertGreaterThan(scroll.contentView.bounds.minY, 0, "Wrapping must not jump back to the top.")
+        XCTAssertEqual(text.selectedRange(), selected)
+        XCTAssertGreaterThanOrEqual(text.convert(NSPoint(x: 8, y: 8), to: scroll).x,
+                                   try XCTUnwrap(scroll.verticalRulerView).frame.maxX)
+        XCTAssertEqual(text.frame.width, viewportSize(scroll).width, accuracy: 1)
+    }
+
+    func testGoToLineUsesUTF16RangesAndScrollsToRequestedLine() async throws {
+        let source = (1...120).map { "line \($0) 🙂" }.joined(separator: "\n")
+        let window = makeWindow(CodeTextView(text: source))
+        defer { window.orderOut(nil) }
+        await settle(window)
+        let hosting = try XCTUnwrap(window.contentView as? NSHostingView<CodeTextView>)
+        hosting.rootView = CodeTextView(text: source, goToLine: 90, goToLineRequest: 1)
+        await settle(window)
+        let scroll = try XCTUnwrap(find(NSScrollView.self, in: hosting))
+        let text = try XCTUnwrap(scroll.documentView as? NSTextView)
+        XCTAssertEqual((source as NSString).substring(with: text.selectedRange()), "line 90 🙂\n")
+        XCTAssertGreaterThan(scroll.contentView.bounds.minY, 500)
+        XCTAssertNil(CodeTextView.range(ofLine: 0, in: source))
+        XCTAssertNil(CodeTextView.range(ofLine: 121, in: source))
+        XCTAssertEqual(CodeTextView.range(ofLine: 2, in: "one\n"), NSRange(location: 4, length: 0))
+        XCTAssertEqual(CodeTextView.range(ofLine: 2, in: "🙂\r\ntwo"), NSRange(location: 4, length: 3))
+    }
+
     private func makeWindow(_ view: CodeTextView, size: NSSize = NSSize(width: 480, height: 220)) -> NSWindow {
         _ = NSApplication.shared
         let window = NSWindow(contentRect: NSRect(origin: NSPoint(x: 100, y: 100), size: size),

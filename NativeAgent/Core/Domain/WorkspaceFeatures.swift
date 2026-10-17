@@ -179,7 +179,7 @@ struct LocalSearchHit: Identifiable, Sendable {
 }
 
 enum WorkspaceCommand: String, CaseIterable, Identifiable {
-    case newChat, dashboard, profiles, templates, reports, context, memory, queue, search, settings, files, changes, terminal, selectedCode
+    case newChat, dashboard, profiles, templates, reports, context, memory, queue, search, settings, files, changes, terminal, selectedCode, github, storage, bookmarks, compareAnswers
     var id: String { rawValue }
     var title: String {
         switch self {
@@ -197,6 +197,10 @@ enum WorkspaceCommand: String, CaseIterable, Identifiable {
         case .changes: "Show changes"
         case .terminal: "Show terminal activity"
         case .selectedCode: "Selected-code actions"
+        case .github: "GitHub workspace"
+        case .storage: "Storage manager"
+        case .bookmarks: "Message bookmarks"
+        case .compareAnswers: "Compare AI answers"
         }
     }
     var shortcut: String { self == .newChat ? "⌘N" : self == .search ? "⌘⇧F" : "" }

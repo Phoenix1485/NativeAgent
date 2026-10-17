@@ -33,11 +33,11 @@ struct WhatsNewView: View {
     @EnvironmentObject private var updater: AppUpdater
     @Environment(\.dismiss) private var dismiss
     private let highlights = [
-        ("Code you can see", "File previews now display code correctly. Open a larger Files tab with a resizable file list on the right, and switch back to your chat whenever you need it."),
-        ("Find the right file", "Search filenames and paths, filter by file type, and use Find or ⌘F to search within the open file."),
-        ("Your archive, easier to browse", "Archived chats use your selected accent color. Search chat titles, filter by archive date, and load more results as needed."),
-        ("Delete when you choose", "Permanently delete an individual archived chat after confirmation, including its saved messages, draft and attachment copies. Original files and provider histories stay separate."),
-        ("Keep large archives manageable", "Chats normally remain recoverable for 30 days. When more than 30 chats are archived, chats containing at least 10 MiB of stored content can be deleted after 20 days, oldest first, until 30 remain.")
+        ("GitHub in your workspace", "Sign in through GitHub CLI, clone or create repositories, stage and commit changes, push and pull, compare branches, and review or merge pull requests."),
+        ("Your configured AIs, where you need them", "Review a diff or selected code, draft a commit or pull request, and compare saved answers with ChatGPT, Grok, Claude API or your custom AI connections. Choose the source and recipients before sending."),
+        ("A larger code workspace", "Open multiple file tabs, split code beside your chat, or use a separate window. Add syntax highlighting, change text size and wrapping, jump to a line with ⌘L, and find files with ⌘P."),
+        ("Manage library storage", "See chat, attachment, backup and cache sizes. Sort by size, archive selected chats, permanently delete selected archived chats, and review upcoming automatic deletions."),
+        ("Keep useful answers close", "Bookmark messages with labels, search them, and jump to the original conversation. View saved AI answers side by side, combine them, or ask an AI to explain disagreements.")
     ]
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {

@@ -270,6 +270,7 @@ struct ConversationView: View {
 
     private var composer: some View {
         VStack(alignment: .leading, spacing: 0) {
+            ScrollView(.horizontal) {
             HStack(spacing: 12) {
                 Button { showComposerActions.toggle(); model.refreshSavedKeys() } label: { Image(systemName: "at") }
                     .help("Choose AIs and quick actions").accessibilityLabel("Choose AIs and quick actions").disabled(model.isWorking)
@@ -282,7 +283,8 @@ struct ConversationView: View {
                 Button("Queue draft") { Task { await model.features.enqueueDraft() } }.disabled(model.draft.isEmpty || !model.providerCapabilities.structuredStreaming)
                 Spacer()
                 if model.features.profile != nil { Button("Profile / overrides") { model.features.execute(.context) } }
-            }.font(.caption).buttonStyle(.plain).foregroundStyle(.secondary).padding(.horizontal, 18).padding(.top, 12)
+            }.font(.caption).buttonStyle(.plain).foregroundStyle(.secondary).fixedSize(horizontal: true, vertical: false)
+            }.frame(height: 28).padding(.horizontal, 18).padding(.top, 8)
             AttachmentStrip(features: model.features)
             if !model.selectedAIRecipients.isEmpty {
                 HStack(alignment: .top) {
