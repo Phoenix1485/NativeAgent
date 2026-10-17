@@ -1,8 +1,10 @@
 import SwiftUI
+import PDFKit
 
 struct AttachmentStrip: View {
     @ObservedObject var features: WorkspaceFeaturesController
     @EnvironmentObject private var model: WorkspaceViewModel
+    @State private var preview: ContextAttachment?
     var body: some View {
         if !features.context.isEmpty {
             ScrollView(.horizontal) {
@@ -10,7 +12,9 @@ struct AttachmentStrip: View {
                     ForEach(features.context) { item in
                         HStack(spacing: 6) {
                             Image(systemName: item.stale ? "exclamationmark.triangle" : "doc.text")
-                            if let path = item.sourceURL {
+                            if item.isMedia {
+                                Button(item.title) { preview = item }.help("Preview the saved attachment snapshot")
+                            } else if let path = item.sourceURL {
                                 Button(item.title) { Task { await features.openFileEditor(URL(fileURLWithPath: path)) } }
                                     .help("Preview or edit \(path)")
                                 Menu {
@@ -28,8 +32,31 @@ struct AttachmentStrip: View {
                     }
                 }
             }.padding(.horizontal, 16).padding(.top, 10)
+                .sheet(item: $preview) { item in MediaAttachmentPreview(item: item) }
         }
     }
+}
+
+struct MediaAttachmentPreview: View {
+    let item: ContextAttachment
+    @Environment(\.dismiss) private var dismiss
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack { Text(item.title).font(.headline); Spacer(); Button("Close") { dismiss() }.keyboardShortcut(.cancelAction) }
+            Text(item.metadata).font(.caption).foregroundStyle(.secondary)
+            if let data = item.mediaData {
+                if item.mimeType == "application/pdf" { PDFSnapshotView(data: data) }
+                else if let image = NSImage(data: data) { Image(nsImage: image).resizable().scaledToFit().frame(maxWidth: .infinity, maxHeight: .infinity) }
+            }
+            Text("This saved snapshot is sent with subsequent messages until you remove it. Model support and account limits apply.").font(.caption)
+        }.padding(20).frame(width: 740, height: 580)
+    }
+}
+
+private struct PDFSnapshotView: NSViewRepresentable {
+    let data: Data
+    func makeNSView(context: Context) -> PDFView { let view = PDFView(); view.autoScales = true; view.document = PDFDocument(data: data); return view }
+    func updateNSView(_ view: PDFView, context: Context) { }
 }
 
 struct AttachedFileEditor: View {

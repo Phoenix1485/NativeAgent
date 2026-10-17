@@ -47,6 +47,9 @@ struct ContextAttachment: Codable, Identifiable, Equatable, Sendable {
     // Optional fields keep older saved conversations readable. A snapshot is not write permission.
     var sourceURL: String?
     var allowEdits: Bool?
+    var mediaData: Data?
+    var mimeType: String?
+    var isMedia: Bool { mediaData != nil }
     var wireText: String {
         let location = path.map { "\nFile: \($0)" } ?? ""
         let lines = startLine.map { "\nLines: \($0)-\(endLine ?? $0)" } ?? ""
@@ -176,7 +179,7 @@ struct LocalSearchHit: Identifiable, Sendable {
 }
 
 enum WorkspaceCommand: String, CaseIterable, Identifiable {
-    case newChat, dashboard, profiles, templates, reports, context, queue, search, settings, files, changes, terminal, selectedCode
+    case newChat, dashboard, profiles, templates, reports, context, memory, queue, search, settings, files, changes, terminal, selectedCode
     var id: String { rawValue }
     var title: String {
         switch self {
@@ -186,6 +189,7 @@ enum WorkspaceCommand: String, CaseIterable, Identifiable {
         case .templates: "Prompt library"
         case .reports: "Task reports and change review"
         case .context: "Context for next request"
+        case .memory: "Chat memory and pinned instructions"
         case .queue: "Task queue"
         case .search: "Search local history"
         case .settings: "Provider settings"

@@ -2,18 +2,65 @@ import Combine
 import Foundation
 import Sparkle
 
+enum AppUpdateStatus: Equatable {
+    case notChecked, checking, upToDate, available(String), downloading, preparing, installing, cancelled, failed(String)
+    var label: String {
+        switch self {
+        case .notChecked: "Not checked this session"
+        case .checking: "Checking for updates…"
+        case .upToDate: "You’re up to date"
+        case .available(let version): "Update \(version) available"
+        case .downloading: "Downloading update…"
+        case .preparing: "Verifying and preparing update…"
+        case .installing: "Installing update…"
+        case .cancelled: "Download cancelled. You can try again."
+        case .failed(let message): "Update failed: \(message)"
+        }
+    }
+}
+
+/// Retains Sparkle's standard signed-update UI and mirrors its actual byte callbacks.
+@MainActor
+final class UpdateProgressDriver: SPUStandardUserDriver {
+    weak var owner: AppUpdater?
+    override func showDownloadInitiated(cancellation: @escaping () -> Void) {
+        owner?.beginDownload()
+        super.showDownloadInitiated(cancellation: cancellation)
+    }
+    override func showDownloadDidReceiveExpectedContentLength(_ expectedContentLength: UInt64) {
+        owner?.expectedDownloadBytes = expectedContentLength
+        super.showDownloadDidReceiveExpectedContentLength(expectedContentLength)
+    }
+    override func showDownloadDidReceiveData(ofLength length: UInt64) {
+        owner?.receivedDownloadBytes += length
+        super.showDownloadDidReceiveData(ofLength: length)
+    }
+}
+
 @MainActor
 final class AppUpdater: NSObject, ObservableObject, SPUUpdaterDelegate {
     @Published private(set) var canCheckForUpdates = false
     @Published private(set) var configured = false
     @Published private(set) var availableVersion: String?
+    @Published private(set) var status: AppUpdateStatus = .notChecked
+    @Published private(set) var lastChecked: Date?
+    @Published var expectedDownloadBytes: UInt64 = 0
+    @Published var receivedDownloadBytes: UInt64 = 0
+    @Published var showWhatsNew = false
+    private let defaults: UserDefaults
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+        lastChecked = defaults.object(forKey: "lastAppUpdateCheck") as? Date
+        super.init()
+    }
     @Published var automaticallyChecks = true {
-        didSet { if configured { controller?.updater.automaticallyChecksForUpdates = automaticallyChecks } }
+        didSet { if configured { sparkle?.automaticallyChecksForUpdates = automaticallyChecks } }
     }
     @Published var automaticallyDownloads = true {
-        didSet { if configured { controller?.updater.automaticallyDownloadsUpdates = automaticallyDownloads } }
+        didSet { if configured { sparkle?.automaticallyDownloadsUpdates = automaticallyDownloads } }
     }
-    private var controller: SPUStandardUpdaterController?
+    private var sparkle: SPUUpdater?
+    private var progressDriver: UpdateProgressDriver?
     private var deferredInstall: (() -> Void)?
     private var activitySubscription: AnyCancellable?
     weak var model: WorkspaceViewModel?
@@ -42,25 +89,32 @@ final class AppUpdater: NSObject, ObservableObject, SPUUpdaterDelegate {
     }
 
     func start(model: WorkspaceViewModel) {
-        guard controller == nil, Bundle.main.bundleURL.pathExtension == "app",
+        guard sparkle == nil, Bundle.main.bundleURL.pathExtension == "app",
               Self.validConfiguration(Bundle.main.infoDictionary ?? [:]) else { return }
         self.model = model
-        let controller = SPUStandardUpdaterController(startingUpdater: false, updaterDelegate: self, userDriverDelegate: nil)
-        self.controller = controller
-        controller.updater.publisher(for: \.canCheckForUpdates).receive(on: DispatchQueue.main)
+        let driver = UpdateProgressDriver(hostBundle: .main, delegate: nil)
+        driver.owner = self; progressDriver = driver
+        let updater = SPUUpdater(hostBundle: .main, applicationBundle: .main, userDriver: driver, delegate: self)
+        sparkle = updater
+        updater.publisher(for: \.canCheckForUpdates).receive(on: DispatchQueue.main)
             .assign(to: &$canCheckForUpdates)
-        automaticallyChecks = controller.updater.automaticallyChecksForUpdates
-        automaticallyDownloads = controller.updater.automaticallyDownloadsUpdates
+        updater.publisher(for: \.sessionInProgress).receive(on: DispatchQueue.main).sink { [weak self] active in
+            if active, self?.status != .downloading { self?.status = .checking }
+        }.store(in: &subscriptions)
+        automaticallyChecks = updater.automaticallyChecksForUpdates
+        automaticallyDownloads = updater.automaticallyDownloadsUpdates
         configured = true
         // Observe work events rather than polling while a relaunch is postponed.
         activitySubscription = model.objectWillChange.sink { [weak self] in
             Task { @MainActor in self?.resumeDeferredInstallIfIdle() }
         }
-        controller.startUpdater()
+        do { try updater.start() }
+        catch { configured = false; recordFailure(error); return }
+        presentWhatsNew(build: Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String)
         // Sparkle recommends additional checks only immediately after starting its scheduler.
         // Do not add a second polling timer or interfere with wake/scheduled checks.
-        if Self.shouldCheckAtLaunch(enabled: automaticallyChecks, lastCheck: controller.updater.lastUpdateCheckDate) {
-            controller.updater.checkForUpdatesInBackground()
+        if Self.shouldCheckAtLaunch(enabled: automaticallyChecks, lastCheck: updater.lastUpdateCheckDate) {
+            updater.checkForUpdatesInBackground()
         }
     }
 
@@ -68,18 +122,63 @@ final class AppUpdater: NSObject, ObservableObject, SPUUpdaterDelegate {
         enabled && (lastCheck.map { now.timeIntervalSince($0) >= 900 } ?? true)
     }
 
-    func checkForUpdates() { controller?.checkForUpdates(nil) }
+    private var subscriptions = Set<AnyCancellable>()
+    func checkForUpdates() {
+        guard canCheckForUpdates else { return }
+        status = .checking
+        sparkle?.checkForUpdates()
+    }
+    func recordCheck(at date: Date = .now) {
+        lastChecked = date; defaults.set(date, forKey: "lastAppUpdateCheck")
+    }
+    func presentWhatsNew(build: String?) {
+        guard let build, !build.isEmpty, defaults.string(forKey: "whatsNewBuild") != build else { return }
+        showWhatsNew = true
+    }
+    func acknowledgeWhatsNew(build: String? = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String) {
+        if let build { defaults.set(build, forKey: "whatsNewBuild") }
+        showWhatsNew = false
+    }
+    var downloadFraction: Double? {
+        guard expectedDownloadBytes > 0 else { return nil }
+        return min(1, Double(receivedDownloadBytes) / Double(expectedDownloadBytes))
+    }
+    func beginDownload() { receivedDownloadBytes = 0; expectedDownloadBytes = 0; status = .downloading }
+    func recordFailure(_ error: Error) {
+        let error = error as NSError
+        status = .failed([error.localizedDescription, error.localizedRecoverySuggestion].compactMap { $0 }.joined(separator: " "))
+    }
 
     func updater(_ updater: SPUUpdater, didFindValidUpdate item: SUAppcastItem) {
         availableVersion = item.displayVersionString
+        recordCheck(); status = .available(item.displayVersionString)
     }
 
-    func updaterDidNotFindUpdate(_ updater: SPUUpdater) {
+    func updaterDidNotFindUpdate(_ updater: SPUUpdater, error: Error) {
+        recordNoUpdate(error)
+    }
+    func recordNoUpdate(_ error: Error) {
         availableVersion = nil
+        recordCheck()
+        let reason = (error as NSError).userInfo[SPUNoUpdateFoundReasonKey] as? NSNumber
+        if let reason, reason.int32Value == SPUNoUpdateFoundReason.onLatestVersion.rawValue || reason.int32Value == SPUNoUpdateFoundReason.onNewerThanLatestVersion.rawValue {
+            status = .upToDate
+        } else { recordFailure(error) }
     }
 
     func updater(_ updater: SPUUpdater, willInstallUpdate item: SUAppcastItem) {
         availableVersion = nil
+        status = .installing
+    }
+
+    func updater(_ updater: SPUUpdater, willDownloadUpdate item: SUAppcastItem, with request: NSMutableURLRequest) { beginDownload() }
+    func updater(_ updater: SPUUpdater, didDownloadUpdate item: SUAppcastItem) { status = .preparing }
+    func updater(_ updater: SPUUpdater, failedToDownloadUpdate item: SUAppcastItem, error: Error) { recordFailure(error) }
+    func userDidCancelDownload(_ updater: SPUUpdater) { status = .cancelled }
+    func updater(_ updater: SPUUpdater, didAbortWithError error: Error) {
+        recordCheck()
+        // A normal no-update cycle also reports SUNoUpdateError after the detailed callback.
+        if (error as NSError).domain != SUSparkleErrorDomain || (error as NSError).code != 1001 { recordFailure(error) }
     }
 
     var installationMustWait: Bool {

@@ -296,6 +296,45 @@ final class ChatGPTBrowserTests: XCTestCase {
         }
     }
 
+    func testMediaPartsReachResponsesAndAreAbsentFromNextTextOnlyTurn() async throws {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [ChatGPTFixtureProtocol.self]
+        let store = MemoryChatGPTCredentials()
+        var record = store.load()
+        record.activeClientID = "oaiapp_fixture"
+        record.registrations = [.init(clientID: "oaiapp_fixture", subject: "fixture", email: "fixture@example.invalid",
+            tokens: .init(accessToken: "fake-access", expiresAt: .now.addingTimeInterval(3600), scope: ChatGPTAuth.scope))]
+        store.save(record)
+        let provider = ChatGPTProvider(store: store, http: ChatGPTHTTP(session: URLSession(configuration: configuration)))
+        let png = Data(base64Encoded: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jhOQAAAAASUVORK5CYII=")!
+        let attachment = try MediaAttachmentService.attachment(data: png, name: "screen.png")
+        let parts = try MediaAttachmentService.inputParts([attachment])
+        for media in [parts, []] {
+            ChatGPTFixtureProtocol.prepare("event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n")
+            try await provider.connect()
+            await provider.setMediaParts(media)
+            let events = await provider.events, done = expectation(description: "Media request completed")
+            let task = Task {
+                for await event in events {
+                    if case .turnCompleted = event { done.fulfill(); return }
+                }
+            }
+            try await provider.startTurn(threadID: "local", prompt: "Read this screenshot", projectPath: "/unused", model: "fixture")
+            await fulfillment(of: [done], timeout: 5); task.cancel()
+            let request = try XCTUnwrap(ChatGPTFixtureProtocol.requests.last { $0.url?.path == "/v1/responses" })
+            let body = try JSONDecoder().decode(JSONValue.self, from: XCTUnwrap(request.httpBody))
+            let content = body["input"]?.arrayValue?.first?["content"]
+            if media.isEmpty { XCTAssertEqual(content, .string("Read this screenshot")) }
+            else {
+                XCTAssertEqual(content?.arrayValue?.last?["type"], .string("input_image"))
+                XCTAssertEqual(content?.arrayValue?.last?["image_url"], .string("data:image/png;base64," + png.base64EncodedString()))
+            }
+            XCTAssertEqual(body["store"], .bool(false)); XCTAssertEqual(body["stream"], .bool(true))
+            XCTAssertFalse(ChatGPTFixtureProtocol.requests.contains { $0.url?.path == "/v1/files" })
+            await provider.disconnect()
+        }
+    }
+
     func testTitleRequestUsesIsolatedTextResponseAndRejectsIncompleteOutput() async throws {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [ChatGPTFixtureProtocol.self]

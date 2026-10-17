@@ -2,15 +2,16 @@ import AppKit
 import SwiftUI
 
 enum SettingsPage: String, CaseIterable, Identifiable {
-    case accounts = "Accounts", models = "Models", plugins = "Plugins", configuration = "Configuration", appearance = "Appearance"
+    case accounts = "Accounts", models = "Models", plugins = "Plugins", configuration = "Configuration", appearance = "Appearance", updates = "Updates"
     var id: String { rawValue }
-    var icon: String { switch self { case .accounts: "person.crop.circle"; case .models: "sparkles"; case .plugins: "puzzlepiece.extension"; case .configuration: "slider.horizontal.3"; case .appearance: "paintpalette" } }
+    var icon: String { switch self { case .accounts: "person.crop.circle"; case .models: "sparkles"; case .plugins: "puzzlepiece.extension"; case .configuration: "slider.horizontal.3"; case .appearance: "paintpalette"; case .updates: "arrow.triangle.2.circlepath" } }
     var subtitle: String { switch self {
     case .accounts: "Your accounts. Your choice of intelligence."
     case .models: "Keep the models you love. Hide the rest."
     case .plugins: "Trusted tools and data sources through MCP."
     case .configuration: "Decide how your agent works."
     case .appearance: "A workspace that feels like you."
+    case .updates: "Your version, update status and release highlights."
     } }
 }
 
@@ -55,7 +56,7 @@ struct SettingsHub: View {
                 }.padding(28)
                 ScrollView {
                     VStack(alignment: .leading, spacing: 20) {
-                        switch page { case .accounts: accounts; case .models: models; case .plugins: MCPSettingsView(manager: model.features.mcp); case .configuration: configuration; case .appearance: appearance }
+                        switch page { case .accounts: accounts; case .models: models; case .plugins: MCPSettingsView(manager: model.features.mcp); case .configuration: configuration; case .appearance: appearance; case .updates: UpdateSettingsView() }
                     }.padding(.horizontal, 28).padding(.bottom, 28).frame(maxWidth: .infinity, alignment: .leading)
                 }
                 if onboarding { onboardingFooter }
@@ -83,7 +84,7 @@ struct SettingsHub: View {
     }
 
     private var navigation: some View {
-        VStack(alignment: .leading, spacing: 26) {
+        VStack(alignment: .leading, spacing: 18) {
             HStack(spacing: 10) {
                 Image(systemName: "square.stack.3d.up.fill").font(.system(size: 21)).foregroundStyle(Studio.accent)
                 Text("NativeAgent").font(.system(size: 16, weight: .semibold))
@@ -101,7 +102,7 @@ struct SettingsHub: View {
             VStack(alignment: .leading, spacing: 8) {
                 Image(systemName: "lock.shield").font(.system(size: 18)).foregroundStyle(.secondary)
                 Text("Private by design").font(.system(size: 11, weight: .medium))
-                Text("Keys and ChatGPT authorization tokens stay in Keychain. Passwords stay with your provider.").font(.system(size: 11)).foregroundStyle(.secondary).lineSpacing(3)
+                Text("Keys and authorization tokens stay in Keychain. Passwords stay with your provider.").font(.system(size: 11)).foregroundStyle(.secondary).lineSpacing(3).fixedSize(horizontal: false, vertical: true)
             }
             Divider()
             VStack(alignment: .leading, spacing: 9) {
@@ -116,7 +117,7 @@ struct SettingsHub: View {
                 }.buttonStyle(.plain).foregroundStyle(Studio.accent).disabled(!updater.canCheckForUpdates)
                     .accessibilityIdentifier("settings-check-for-updates")
                 if !updater.configured {
-                    Text("Use the download link to update this build.").font(.system(size: 10)).foregroundStyle(.secondary)
+                    Text("Update this build using the download link.").font(.system(size: 10)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 }
                 Link(destination: AppUpdater.downloadPageURL) {
                     Label("Download on GitHub Pages", systemImage: "arrow.up.right.square")
@@ -333,11 +334,12 @@ struct SettingsHub: View {
 
     private var configuration: some View {
         Group {
+            card { BackupSettingsView(model: model) }
             providerSelector
             if direct {
                 card {
                     sectionLabel("DIRECT CHATGPT CONNECTION")
-                    Text("Browser sign-in and native HTTPS requests. No Codex executable is used. Attach text/code files in the composer; optionally allow reviewed AI edits. Connect trusted MCP servers in Plugins for additional tools.").font(.system(size: 12)).foregroundStyle(.secondary)
+                    Text("Browser sign-in and native HTTPS requests. No Codex executable is used. Attach text/code, images or PDFs in the composer; text files can optionally allow reviewed AI edits. Connect trusted MCP servers in Plugins for additional tools.").font(.system(size: 12)).foregroundStyle(.secondary)
                 }
             } else {
             card {

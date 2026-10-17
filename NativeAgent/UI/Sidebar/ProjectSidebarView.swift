@@ -41,6 +41,10 @@ struct ProjectSidebarView: View {
             }.padding(.horizontal, 14).padding(.bottom, 16)
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 3) {
+                    if search.isEmpty && !model.pinnedChats.isEmpty {
+                        sectionTitle("PINNED")
+                        ForEach(model.pinnedChats) { chat in ChatSidebarRow(chat: chat) }
+                    }
                     sectionTitle("GROUPS")
                     ForEach(model.groups.filter { search.isEmpty ? $0.parentID == nil : $0.name.localizedCaseInsensitiveContains(search) }) { group in
                         GroupTreeRow(group: group, editor: $editor, searching: !search.isEmpty)
@@ -50,7 +54,7 @@ struct ProjectSidebarView: View {
                         Text("Keep related chats together.\nAdd a folder when you need one.").font(.system(size: 11)).foregroundStyle(.tertiary).lineSpacing(3).padding(.horizontal, 10).padding(.bottom, 12)
                     }
                     sectionTitle(search.isEmpty ? "CHATS" : "MATCHING CHATS").padding(.top, 22)
-                    ForEach(search.isEmpty ? model.chats(in: nil) : model.searchResults) { chat in ChatSidebarRow(chat: chat) }
+                    ForEach(search.isEmpty ? model.chats(in: nil).filter { model.chatAttention[$0.id]?.pinned != true } : model.searchResults) { chat in ChatSidebarRow(chat: chat) }
                     if search.isEmpty { ChatPageButton(groupID: nil) }
                     else if model.searchLoading { ProgressView().controlSize(.small).padding(10) }
                     else if model.searchHasMore {
@@ -161,7 +165,11 @@ struct ChatSidebarRow: View {
                     else { Task { await model.select(chat) } }
                 } label: {
                     HStack(spacing: 9) {
-                        Image(systemName: "bubble.left").frame(width: 18)
+                        if model.chatIsWorking(chat.id) {
+                            ProgressView().controlSize(.mini).frame(width: 18).help("This chat is working").accessibilityLabel("Chat working")
+                        } else if model.chatAttention[chat.id]?.unread == true {
+                            Circle().fill(Studio.accent).frame(width: 7, height: 7).frame(width: 18).help("Unread reply").accessibilityLabel("Unread reply")
+                        } else { Image(systemName: model.chatAttention[chat.id]?.pinned == true ? "pin" : "bubble.left").frame(width: 18) }
                         ScrollingChatTitle(title: chat.title)
                     }.font(.system(size: 13)).foregroundStyle(model.selectedConversation?.id == chat.id ? Studio.accent : .secondary)
                         .padding(.leading, 10).padding(.vertical, 9).contentShape(Rectangle())

@@ -191,6 +191,7 @@ final class WorkspaceFeaturesController: ObservableObject {
         try await database.saveFeature(context, kind: "context", id: owner.uuidString, conversationID: owner)
     }
     func addContext(_ item: ContextAttachment) async {
+        guard context.reduce(0, { $0 + ($1.mediaData?.count ?? 0) }) + (item.mediaData?.count ?? 0) <= MediaAttachmentService.totalLimit else { notice = "Images/PDFs are limited to 12 MiB total."; return }
         guard context.count < 24, context.reduce(0, { $0 + $1.text.utf8.count }) + item.text.utf8.count <= 1_048_576 else { notice = "Context is limited to 24 items / 1 MiB."; return }
         if model?.selectedConversation == nil { await model?.newConversation() }
         contextOwner = model?.selectedConversation?.id; context.append(item)
@@ -202,7 +203,8 @@ final class WorkspaceFeaturesController: ObservableObject {
         let owner = contextOwner, values = context
         for item in values {
             let stale: Bool
-            if let path = item.sourceURL {
+            if item.isMedia { stale = false } // Persisted, immutable media snapshot; preview exactly what will be sent.
+            else if let path = item.sourceURL {
                 let snapshot = try? await attachedFiles.load(URL(fileURLWithPath: path))
                 stale = snapshot?.hash != item.sourceHash
             } else if let root { stale = await fileService.stale(item, root: root) }
@@ -245,6 +247,29 @@ final class WorkspaceFeaturesController: ObservableObject {
             model.conversations.insert(child, at: 0); await model.select(child)
             context = attached; contextOwner = child.id
             notice = "Created a separate conversation with selected context. Native provider forking is not verified by this integration. Review/edit the prompt before sending."
+        } catch { fail(error) }
+    }
+
+    func prepareRetry(_ entry: TimelineEntry, prompt: String? = nil) async {
+        guard let model, let parent = model.selectedConversation, !model.isWorking else { return }
+        do {
+            await model.flushPendingPersistence()
+            let child = try await database.retryBranch(from: parent, entryID: entry.id, editedPrompt: prompt)
+            model.conversations.insert(child, at: 0)
+            if model.selectedConversation?.id == parent.id { await model.select(child) }
+            notice = "Original chat preserved. Review this retry’s prompt and current attachments, then press Send. Previous tool side effects are not undone; nothing has been rerun yet."
+        } catch { fail(error) }
+    }
+
+    func exportChat(_ chat: Conversation, pdf: Bool) async {
+        do {
+            await model?.flushPendingPersistence()
+            let text = try await database.conversationMarkdown(chat)
+            let data = pdf ? try ChatExport.pdf(text) : Data(text.utf8)
+            let panel = NSSavePanel(); panel.nameFieldStringValue = "NativeAgent-chat." + (pdf ? "pdf" : "md")
+            guard panel.runModal() == .OK, let url = panel.url else { return }
+            try data.write(to: url, options: .atomic)
+            notice = "Chat exported to \(url.lastPathComponent). Attachments and tool logs are not included."
         } catch { fail(error) }
     }
 

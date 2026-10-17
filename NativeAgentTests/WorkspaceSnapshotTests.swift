@@ -36,6 +36,10 @@ final class WorkspaceSnapshotTests: XCTestCase {
         model.renameConversation(longChat)
         try render(model, name: "inline-chat-rename", dark: true, destination: destination)
         model.renamingConversationID = nil
+        try await database.save(conversation: longChat)
+        try await database.setChatAttention(longChat.id, pinned: true, unread: true)
+        await model.refreshChatAttention()
+        try render(model, name: "pinned-unread-chat", dark: true, destination: destination)
         try render(model, name: "groups-small", dark: false, destination: destination, size: NSSize(width: 900, height: 620))
         model.selectedConversation = model.conversations.first
         model.timeline = [
@@ -67,11 +71,14 @@ final class WorkspaceSnapshotTests: XCTestCase {
         model.features.templates = PromptTemplate.starters
         model.features.profile = ProjectProfile(id: project.id, workingDirectory: directory.path)
         model.features.context = [.init(kind: .code, title: "Navigation.swift", text: "let selection = currentMessage.id", path: "Navigation.swift", startLine: 12, endLine: 12)]
-        for command in [WorkspaceCommand.dashboard, .profiles, .templates, .context, .queue, .reports, .search] {
+        for command in [WorkspaceCommand.dashboard, .profiles, .templates, .context, .memory, .queue, .reports, .search] {
             model.features.panel = command
             try renderView(FeaturePanel(features: model.features).environmentObject(model), name: "feature-" + command.rawValue, dark: true, destination: destination, size: NSSize(width: 760, height: 650))
         }
         model.features.panel = nil
+        try await database.saveProjectMemory(.init(frameworks: "SwiftUI and SQLite", conventions: "Use actors for data access", goals: "Reliable local workspace", decisions: "Keep credentials in Keychain", avoidances: "No automatic cloud sync"), projectID: project.id)
+        try renderView(Form { ProjectMemoryEditor(projectID: project.id) }.formStyle(.grouped).environmentObject(model), name: "project-memory", dark: true, destination: destination, size: NSSize(width: 700, height: 650))
+        try renderView(WhatsNewView(), name: "whats-new", dark: true, destination: destination, size: NSSize(width: 570, height: 600))
         try renderView(WorkspaceCommandPalette(features: model.features).environmentObject(model), name: "command-palette", dark: true, destination: destination, size: NSSize(width: 600, height: 440))
         try renderView(GroupEditorView(request: GroupEditorRequest(parentID: root.id)).environmentObject(model), name: "new-folder", dark: true, destination: destination, size: NSSize(width: 486, height: 500))
         try renderView(SettingsHub(model: model, settings: model.settings, onboarding: true), name: "onboarding", dark: true, destination: destination, size: NSSize(width: 940, height: 690))
@@ -81,6 +88,7 @@ final class WorkspaceSnapshotTests: XCTestCase {
         }
         try renderView(SettingsHub(model: model, settings: model.settings, page: .models), name: "settings-models", dark: true, destination: destination, size: NSSize(width: 940, height: 690))
         try renderView(SettingsHub(model: model, settings: model.settings, page: .configuration), name: "settings-configuration", dark: true, destination: destination, size: NSSize(width: 940, height: 690))
+        try renderView(SettingsHub(model: model, settings: model.settings, page: .updates), name: "settings-updates", dark: true, destination: destination, size: NSSize(width: 940, height: 690))
         try renderView(SettingsHub(model: model, settings: model.settings, page: .plugins), name: "settings-plugins", dark: true, destination: destination, size: NSSize(width: 940, height: 690))
         let file = AttachedFileSnapshot(url: directory.appendingPathComponent("Example.swift"), data: Data("import SwiftUI\n\nstruct Example: View {\n    var body: some View { Text(\"Hello\") }\n}\n".utf8))
         try renderView(AttachedFileEditor(file: file, features: model.features).environmentObject(model), name: "file-editor", dark: true, destination: destination, size: NSSize(width: 820, height: 620))

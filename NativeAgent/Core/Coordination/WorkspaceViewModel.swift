@@ -55,6 +55,23 @@ final class WorkspaceViewModel: ObservableObject {
     @Published var searchHasMore = false
     @Published var searchLoading = false
     @Published var renamingConversationID: UUID?
+    @Published private(set) var chatAttention: [UUID: ChatAttention] = [:]
+    @Published private(set) var pinnedChats: [Conversation] = []
+
+    func chatIsWorking(_ id: UUID) -> Bool { activeConversationID == id && isWorking }
+    func refreshChatAttention() async {
+        do { chatAttention = try await database.chatAttention(); pinnedChats = try await database.pinnedConversations() }
+        catch { show(error) }
+    }
+    func setChatPinned(_ chat: Conversation, pinned: Bool) async {
+        do { try await database.setChatAttention(chat.id, pinned: pinned); await refreshChatAttention() }
+        catch { show(error) }
+    }
+    func markSelectedChatRead() async {
+        guard let id = selectedConversation?.id, !hasNewerMessages, !historyLoading else { return }
+        do { try await database.setChatAttention(id, unread: false); await refreshChatAttention() }
+        catch { show(error) }
+    }
     @Published var libraryHasMore: Set<String> = []
     @Published var hasOlderMessages = false
     @Published var hasNewerMessages = false
@@ -74,7 +91,7 @@ final class WorkspaceViewModel: ObservableObject {
     private var providerGeneration = UUID()
     private var accountOperation = UUID()
     private var browserLoginPending = false
-    private let database: DatabaseActor
+    let database: DatabaseActor
     private let files: FileService
     private let git: GitService
     private let preferences: UserDefaults
@@ -96,6 +113,7 @@ final class WorkspaceViewModel: ObservableObject {
     private var searchVersion = UUID()
     private var maintenanceTask: Task<Void, Never>?
     private var persistenceTask: Task<Void, Never>?
+    private var memoryPreparationTask: Task<String, Error>?
     private var creationTail: Task<Void, Never>?
     private var lastStreamSave = Date.distantPast
     private var workspaceLoadedID: UUID?
@@ -217,6 +235,7 @@ final class WorkspaceViewModel: ObservableObject {
     }
 
     private func upsertChat(_ chat: Conversation) {
+        if let index = pinnedChats.firstIndex(where: { $0.id == chat.id }) { pinnedChats[index] = chat }
         if let index = conversations.firstIndex(where: { $0.id == chat.id }) { conversations[index] = chat }
         else { conversations.append(chat) }
         if let index = searchResults.firstIndex(where: { $0.id == chat.id }) { searchResults[index] = chat }
@@ -256,6 +275,7 @@ final class WorkspaceViewModel: ObservableObject {
             try await database.archiveConversation(id: chat.id)
             conversations.removeAll { $0.id == chat.id }
             searchResults.removeAll { $0.id == chat.id }
+            await refreshChatAttention()
             if selectedConversation?.id == chat.id { await selectGroup(chat.groupID) }
         } catch { show(error) }
     }
@@ -284,6 +304,7 @@ final class WorkspaceViewModel: ObservableObject {
             upsertChat(restored)
             archivedConversations.removeAll { $0.id == chat.id }
             if let group = restored.groupID { expand(group, expanded: true) }
+            await refreshChatAttention()
         } catch { show(error) }
     }
 
@@ -599,6 +620,8 @@ final class WorkspaceViewModel: ObservableObject {
             hasOlderMessages = (entries.first?.receivedOrder ?? 1) > 1
             draft = savedDraft
             draftLoaded = true; historyLoading = false
+            await markSelectedChatRead()
+            guard selectionVersion == version else { return }
             await loadWorkspace()
             await features.selectionChanged()
         } catch { if selectionVersion == version { historyLoading = false; show(error) } }
@@ -631,6 +654,9 @@ final class WorkspaceViewModel: ObservableObject {
             guard selectionVersion == version else { return }
             timeline = entries; hasNewerMessages = false
             hasOlderMessages = (entries.first?.receivedOrder ?? 1) > 1
+            historyLoading = false
+            await markSelectedChatRead()
+            guard selectionVersion == version else { return }
             if activeConversationID == chat.id, let streamingEntry {
                 if let index = timeline.firstIndex(where: { $0.id == streamingEntry.id }) { timeline[index] = displayEntry(streamingEntry) }
                 else { timeline.append(displayEntry(streamingEntry)) }
@@ -921,13 +947,33 @@ final class WorkspaceViewModel: ObservableObject {
             try await database.save(conversation: conversation)
             let explicitContext = try await features.contextForSend()
             let contextSnapshot = features.context
+            if contextSnapshot.contains(where: \.isMedia), !(provider is ChatGPTProvider) {
+                throw NativeAgentError.unsupported("Images and PDFs require the direct ChatGPT connection. Select ChatGPT or remove these attachments.")
+            }
+            let mediaParts = try MediaAttachmentService.inputParts(contextSnapshot)
             let localTools = provider is ChatGPTProvider ? try await features.nativeTools(access: run.access, attachments: contextSnapshot, owner: conversation.id) : []
             guard features.contextOwner == preparationContextOwner else { throw NativeAgentError.unsupported("Conversation changed while preparing attachments. Review and send again.") }
             try await features.beginTask(conversation: conversation, project: project, prompt: prompt)
             await persistenceTask?.value
-            // Direct Responses has no durable provider thread. Resend a disclosed bounded excerpt.
+            // Legacy handoffs use a bounded excerpt; direct Responses adds persistent memory below.
             let history = (needsNewSession || provider is ChatGPTProvider) ? try await database.timeline(conversationID: conversation.id, limit: 24, previewCharacters: 2_000, messagesOnly: true) : []
-            let providerPrompt = ChatHandoff.prompt(history: history, current: prompt) + explicitContext
+            var providerPrompt = ChatHandoff.prompt(history: history, current: prompt)
+            if let direct = provider as? ChatGPTProvider, let modelID = chosenModelID {
+                let database = database, chatID = conversation.id
+                let preparation = Task {
+                    try await ConversationMemoryService.prepare(database: database, chat: chatID, current: prompt) { instructions, input in
+                        try await direct.titleCompletion(instructions: instructions, input: input, model: modelID)
+                    }
+                }
+                memoryPreparationTask = preparation
+                defer { memoryPreparationTask = nil }
+                providerPrompt = try await preparation.value
+            }
+            let pins = try await database.feature(String.self, kind: "chat-pins", id: conversation.id.uuidString) ?? ""
+            if !pins.isEmpty { providerPrompt += "\n\nUser-pinned instructions for this chat:\n" + pins }
+            let projectMemory = try await database.projectMemory(project.id)
+            providerPrompt += try projectMemory.prompt()
+            providerPrompt += explicitContext
             if canceledBeforeTurn { throw CancellationError() }
             if selectedConversation?.id == conversation.id && hasNewerMessages { await loadLatestMessages() }
             append(userEntry, conversationID: conversation.id)
@@ -937,6 +983,7 @@ final class WorkspaceViewModel: ObservableObject {
             await provider.configure(run)
             if let direct = provider as? ChatGPTProvider {
                 await direct.setNativeTools(localTools)
+                await direct.setMediaParts(mediaParts)
             }
             try await database.saveDraft("", conversationID: conversation.id)
             let threadID: String
@@ -959,7 +1006,7 @@ final class WorkspaceViewModel: ObservableObject {
                     text: item.wireText, path: item.path)
                 append(.init(turnID: activeTurnID, kind: .fact, title: fact.title, text: fact.text, detail: fact.encoded), conversationID: conversation.id)
             }
-            if !history.isEmpty {
+            if !history.isEmpty || !pins.isEmpty || !projectMemory.isEmpty {
                 // Store only the exact visible context that this application sent.
                 let fact = ConversationFact(key: "handoff/\(userEntry.id)", category: .source, title: "Recent conversation context", text: providerPrompt)
                 append(.init(turnID: activeTurnID, kind: .fact, title: fact.title, text: fact.text, detail: fact.encoded), conversationID: conversation.id)
@@ -990,6 +1037,7 @@ final class WorkspaceViewModel: ObservableObject {
     func stop() async {
         guard providerCapabilities.interrupt else { return }
         if activeThreadID == nil, turnStatus == .starting || turnStatus == .interrupting {
+            memoryPreparationTask?.cancel()
             canceledBeforeTurn = true; features.pauseQueue(); turnStatus = .interrupting; return
         }
         guard let threadID = activeThreadID else { return }
@@ -1080,15 +1128,27 @@ final class WorkspaceViewModel: ObservableObject {
             groups = try await database.groups()
             await loadChats()
             await features.restore()
+            await refreshChatAttention()
+            if let message = database.startupRestoreNotice { features.notice = message }
             maintenanceTask?.cancel()
             maintenanceTask = Task { [weak self] in
+                await self?.automaticBackup()
                 await self?.maintainArchive()
                 while !Task.isCancelled {
                     do { try await Task.sleep(for: .seconds(3_600)) } catch { return }
                     await self?.maintainArchive()
+                    await self?.automaticBackup()
                 }
             }
         } catch { show(error) }
+    }
+
+    private func automaticBackup() async {
+        guard features.defaults.object(forKey: "automaticLibraryBackups") as? Bool != false else { return }
+        await saveDraft()
+        await flushPendingPersistence()
+        do { _ = try await database.backupLibrary(daily: true) }
+        catch { features.notice = "Automatic backup failed: \(error.localizedDescription). Use Settings → Configuration to retry." }
     }
 
     private func receive(_ event: ProviderEvent) async {
@@ -1163,6 +1223,12 @@ final class WorkspaceViewModel: ObservableObject {
             _ = finishStreaming()
             turnStatus = status
             if let error { append(.init(kind: .error, title: "Turn failed", text: error), conversationID: activeConversationID) }
+            if let id = activeConversationID {
+                do {
+                    try await database.setChatAttention(id, unread: selectedConversation?.id != id || !(NSApp?.isActive ?? false) || hasNewerMessages)
+                    await refreshChatAttention()
+                } catch { show(error) }
+            }
             activeConversationID = nil
             activeUserEntry = nil
             activeThreadID = nil

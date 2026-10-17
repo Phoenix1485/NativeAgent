@@ -15,6 +15,8 @@ actor ChatGPTProvider: CodingProvider {
     private var authenticated = false
     private var currentTurnID: String?
     private var nativeTools: [NativeTool] = []
+    private var mediaParts: [JSONValue] = []
+    func setMediaParts(_ parts: [JSONValue]) { mediaParts = parts }
     private var pendingApproval: (id: String, continuation: CheckedContinuation<Bool, Never>)?
 
     func setNativeTools(_ tools: [NativeTool]) { nativeTools = tools }
@@ -26,7 +28,7 @@ actor ChatGPTProvider: CodingProvider {
     static var capabilities: ProviderCapabilities {
         .init(subscriptionAuth: true, apiKeyAuth: false, structuredStreaming: true, resume: false,
               interrupt: true, nativeApprovals: true, fileChangeEvents: true, usageReporting: false,
-              imageInput: false, modelDiscovery: true, terminalSession: false)
+              imageInput: true, modelDiscovery: true, terminalSession: false)
     }
     func inspect() -> ProviderInspection {
         .init(binaryPath: nil, version: nil, isExecutable: false, capabilities: Self.capabilities,
@@ -42,7 +44,7 @@ actor ChatGPTProvider: CodingProvider {
         publishAccount(registration); continuation.yield(.models(models))
     }
     func disconnect() {
-        resolveApproval(false); nativeTools = []
+        resolveApproval(false); nativeTools = []; mediaParts = []
         generation = UUID(); loginTask?.cancel(); loginTask = nil
         turnTask?.cancel(); turnTask = nil; refreshTask?.cancel(); refreshTask = nil
         currentTurnID = nil; authenticated = false
@@ -254,14 +256,15 @@ actor ChatGPTProvider: CodingProvider {
         guard turnTask == nil else { throw NativeAgentError.alreadyRunning }
         guard let model, !model.isEmpty else { throw ChatGPTAuth.failure("Choose an available ChatGPT model in Settings → Models.") }
         let id = UUID().uuidString; currentTurnID = id
-        let operation = generation, instructions = configuration.instructions, tools = nativeTools
+        let operation = generation, instructions = configuration.instructions, tools = nativeTools, media = mediaParts
         continuation.yield(.turnStarted(id))
-        turnTask = Task { await stream(id: id, prompt: prompt, model: model, instructions: instructions, operation: operation, tools: tools) }
+        turnTask = Task { await stream(id: id, prompt: prompt, model: model, instructions: instructions, operation: operation, tools: tools, media: media) }
     }
-    private func stream(id: String, prompt: String, model: String, instructions: String, operation: UUID, tools: [NativeTool]) async {
+    private func stream(id: String, prompt: String, model: String, instructions: String, operation: UUID, tools: [NativeTool], media: [JSONValue]) async {
         defer { if generation == operation { turnTask = nil; currentTurnID = nil } }
         do {
-            var input: [JSONValue] = [.object(["role": .string("user"), "content": .string(prompt)])]
+            let content: JSONValue = media.isEmpty ? .string(prompt) : .array([.object(["type": .string("input_text"), "text": .string(prompt)])] + media)
+            var input: [JSONValue] = [.object(["role": .string("user"), "content": content])]
             var usedCalls = Set<String>()
             for _ in 0..<8 {
                 try Task.checkCancellation()
@@ -281,7 +284,7 @@ actor ChatGPTProvider: CodingProvider {
                     body["include"] = .array([.string("reasoning.encrypted_content")])
                 }
                 request.httpBody = try JSONEncoder().encode(body)
-                guard (request.httpBody?.count ?? 0) <= 8_388_608 else { throw ChatGPTAuth.failure("Tool context exceeded 8 MiB. Start a new request with less context.") }
+                guard (request.httpBody?.count ?? 0) <= 33_554_432 else { throw ChatGPTAuth.failure("Request context exceeded 32 MiB. Start a new request with fewer attachments.") }
                 let (bytes, response) = try await http.session.bytes(for: request)
                 let status = (response as? HTTPURLResponse)?.statusCode ?? 0
                 guard status == 200 else { throw ChatGPTHTTPError(status: status) }

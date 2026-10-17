@@ -13,10 +13,12 @@ struct WorkspaceView: View {
 
     var body: some View {
         workspaceLayout
+            .sheet(isPresented: $updater.showWhatsNew, onDismiss: { updater.acknowledgeWhatsNew() }) { WhatsNewView().environmentObject(updater) }
             .sheet(item: Binding(get: { model.features.editingFile }, set: { model.features.editingFile = $0 })) { file in
                 AttachedFileEditor(file: file, features: model.features).environmentObject(model)
             }
             .background(sessionObservers)
+            .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in Task { await model.markSelectedChatRead() } }
             .background(WindowFrameRestorer().frame(width: 0, height: 0))
             .sheet(isPresented: Binding(get: { model.features.paletteVisible || model.features.panel != nil }, set: { if !$0 { model.features.paletteVisible = false; model.features.panel = nil } })) {
                 if model.features.paletteVisible { WorkspaceCommandPalette(features: model.features).environmentObject(model) }

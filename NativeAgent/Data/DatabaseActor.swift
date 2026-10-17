@@ -7,16 +7,65 @@ actor DatabaseActor {
     private var database: OpaquePointer?
     private var initialized = false
     private let url: URL
+    let startupRestoreNotice: String?
 
     init(url: URL) throws {
         self.url = url
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        do { try LibrarySnapshots.applyPending(to: url); startupRestoreNotice = nil }
+        catch { startupRestoreNotice = "Restore could not finish: \(error.localizedDescription). Your backup is retained. Check Settings → Configuration." }
         guard sqlite3_open_v2(url.path, &database, SQLITE_OPEN_CREATE | SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX, nil) == SQLITE_OK else {
             throw NativeAgentError.providerUnavailable("Could not open the local database.")
         }
     }
 
     deinit { sqlite3_close(database) }
+
+    func backupLibrary(daily: Bool = false) throws -> [URL] {
+        try ensureInitialized()
+        if daily { try LibrarySnapshots.daily(for: url) }
+        else { _ = try LibrarySnapshots.create(for: url, prefix: "manual") }
+        return try LibrarySnapshots.list(for: url)
+    }
+    func libraryBackups() throws -> [URL] { try LibrarySnapshots.list(for: url) }
+    func stageLibraryRestore(from source: URL) throws { try LibrarySnapshots.stage(source: source, database: url) }
+
+    func conversationMarkdown(_ chat: Conversation) throws -> String {
+        try ensureInitialized()
+        var result = "# \(chat.title)\n\nExported from NativeAgent. User and assistant messages only.\n\n"
+        let rows = try query("SELECT kind,display_text,created_at FROM timeline_items WHERE conversation_id=? AND kind IN ('userMessage','agentMessage') ORDER BY received_order", [.text(chat.id.uuidString)]) {
+            ($0.text(0), $0.text(1), Date(timeIntervalSince1970: $0.double(2)))
+        }
+        for (kind, text, date) in rows { result += "## \(kind == "userMessage" ? "You" : "Assistant") · \(date.ISO8601Format())\n\n\(text)\n\n" }
+        return result
+    }
+
+    func chatAttention() throws -> [UUID: ChatAttention] {
+        try ensureInitialized()
+        let rows = try query("SELECT f.id,f.payload FROM feature_records f JOIN conversations c ON c.id=f.conversation_id WHERE f.kind='chat-attention' AND c.archived_at IS NULL") {
+            (UUID(uuidString: $0.text(0)), try JSONDecoder().decode(ChatAttention.self, from: Data($0.text(1).utf8)))
+        }
+        return Dictionary(uniqueKeysWithValues: rows.compactMap { id, value in id.map { ($0, value) } })
+    }
+
+    func setChatAttention(_ id: UUID, pinned: Bool? = nil, unread: Bool? = nil) throws {
+        guard let chat = try conversation(id: id), chat.archivedAt == nil else { return }
+        var state = try feature(ChatAttention.self, kind: "chat-attention", id: id.uuidString) ?? ChatAttention()
+        if let pinned {
+            if pinned && !state.pinned {
+                if try chatAttention().values.filter(\.pinned).count >= 50 { throw NativeAgentError.unsupported("You can pin up to 50 chats. Unpin one first.") }
+            }
+            state.pinned = pinned
+        }
+        if let unread { state.unread = unread }
+        if state == ChatAttention() { try removeFeature(kind: "chat-attention", id: id.uuidString) }
+        else { try saveFeature(state, kind: "chat-attention", id: id.uuidString, conversationID: id) }
+    }
+
+    func pinnedConversations() throws -> [Conversation] {
+        let states = try chatAttention()
+        return try states.filter { $0.value.pinned }.keys.compactMap { try conversation(id: $0) }.sorted { $0.updatedAt > $1.updatedAt }
+    }
 
     func save(project: Project) throws {
         try ensureInitialized()
@@ -406,6 +455,43 @@ actor DatabaseActor {
     func branchLinks(for id: UUID) throws -> [BranchLink] {
         try ensureInitialized()
         return try query("SELECT payload FROM feature_records WHERE kind='branch' AND (id=? OR json_extract(payload,'$.parentID')=?) ORDER BY updated_at DESC LIMIT 100", [.text(id.uuidString), .text(id.uuidString)]) { try JSONDecoder().decode(BranchLink.self, from: Data($0.text(0).utf8)) }
+    }
+
+    /// Copy complete message history before the selected prompt, not a UI preview.
+    func retryBranch(from parent: Conversation, entryID: UUID, editedPrompt: String? = nil) throws -> Conversation {
+        try ensureInitialized()
+        guard try conversation(id: parent.id)?.archivedAt == nil,
+              let target = try query("SELECT received_order FROM timeline_items WHERE id=? AND conversation_id=?", [.text(entryID.uuidString), .text(parent.id.uuidString)], map: { $0.int(0) }).first,
+              let prompt = try query("SELECT id,received_order,display_text FROM timeline_items WHERE conversation_id=? AND kind='userMessage' AND received_order<=? ORDER BY received_order DESC LIMIT 1", [.text(parent.id.uuidString), .int(target)], map: { ($0.text(0), $0.int(1), $0.text(2)) }).first else {
+            throw NativeAgentError.unsupported("No original prompt is available to retry.")
+        }
+        let text = editedPrompt ?? prompt.2
+        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw NativeAgentError.unsupported("Enter a message before continuing.") }
+        var child = Conversation(projectID: parent.projectID, groupID: parent.groupID, title: "Retry · " + parent.title)
+        child.providerID = parent.providerID
+        try execute("BEGIN IMMEDIATE")
+        do {
+            try save(conversation: child)
+            var cursor = 0
+            while true {
+                let page = try query("SELECT received_order,kind,title,display_text,created_at FROM timeline_items WHERE conversation_id=? AND kind IN ('userMessage','agentMessage') AND is_streaming=0 AND received_order>? AND received_order<? ORDER BY received_order LIMIT 100", [.text(parent.id.uuidString), .int(cursor), .int(prompt.1)]) { row in
+                    (row.int(0), TimelineEntry(kind: TimelineKind(rawValue: row.text(1))!, title: row.text(2), text: row.text(3), createdAt: Date(timeIntervalSince1970: row.double(4))))
+                }
+                if page.isEmpty { break }
+                for (order, entry) in page { try save(entry: entry, conversationID: child.id); cursor = order }
+            }
+            var context = try feature([ContextAttachment].self, kind: "context", id: parent.id.uuidString) ?? []
+            for index in context.indices { context[index].allowEdits = false }
+            try saveFeature(context, kind: "context", id: child.id.uuidString, conversationID: child.id)
+            if let pins = try feature(String.self, kind: "chat-pins", id: parent.id.uuidString) {
+                try saveFeature(pins, kind: "chat-pins", id: child.id.uuidString, conversationID: child.id)
+            }
+            let link = BranchLink(id: child.id, parentID: parent.id, messageID: entryID, parentTitle: parent.title, branchTitle: child.title, mode: "Retry branch with complete earlier messages; original unchanged")
+            try saveFeature(link, kind: "branch", id: child.id.uuidString, conversationID: child.id)
+            try saveDraft(text, conversationID: child.id)
+            try execute("COMMIT")
+        } catch { try? execute("ROLLBACK"); throw error }
+        return child
     }
 
     /// A new local identity plus explicitly selected, bounded context; never a reused remote session.

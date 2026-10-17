@@ -33,6 +33,41 @@ final class ConversationLifecycleTests: XCTestCase {
     }
     private func settle() async throws { try await Task.sleep(for: .milliseconds(20)) }
 
+    func testExistingChatReadsLatestProjectMemoryAndPinnedInstructionsEverySend() async throws {
+        try await readyChat()
+        let project = try XCTUnwrap(model.selectedProject), chat = try XCTUnwrap(model.selectedConversation)
+        try await database.saveProjectMemory(.init(frameworks: "First framework"), projectID: project.id)
+        try await database.saveFeature("Pinned exact requirement", kind: "chat-pins", id: chat.id.uuidString, conversationID: chat.id)
+        model.draft = "First request"; await model.send(); try await settle()
+        var prompts = await provider.sentPrompts
+        XCTAssertTrue(prompts.last?.contains("First framework") == true)
+        XCTAssertTrue(prompts.last?.contains("Pinned exact requirement") == true)
+        try await database.saveProjectMemory(.init(frameworks: "Updated framework"), projectID: project.id)
+        model.draft = "Next request"; await model.send(); try await settle()
+        prompts = await provider.sentPrompts
+        XCTAssertTrue(prompts.last?.contains("Updated framework") == true)
+        XCTAssertFalse(prompts.last?.contains("First framework") == true)
+        XCTAssertEqual(model.selectedConversation?.id, chat.id)
+    }
+
+    func testUnreadAndWorkingIndicatorFollowOriginalChatWhenSelectionChanges() async throws {
+        try await readyChat()
+        await provider.setCompleteImmediately(false)
+        let chat = try XCTUnwrap(model.selectedConversation)
+        model.draft = "Work in this chat"; await model.send(); try await settle()
+        XCTAssertTrue(model.chatIsWorking(chat.id))
+        await model.newConversation()
+        let other = try XCTUnwrap(model.selectedConversation)
+        XCTAssertNotEqual(chat.id, other.id)
+        XCTAssertFalse(model.chatIsWorking(other.id))
+        await provider.emit(.turnCompleted(turnID: nil, status: .completed, error: nil)); try await settle()
+        XCTAssertFalse(model.chatIsWorking(chat.id))
+        XCTAssertTrue(model.chatAttention[chat.id]?.unread == true)
+        XCTAssertNil(model.chatAttention[other.id])
+        await model.select(chat)
+        XCTAssertFalse(model.chatAttention[chat.id]?.unread == true)
+    }
+
     func testDetailsScopeApprovalsAndKeepToolIdentityAcrossUpdates() async throws {
         try await readyChat()
         await provider.setCompleteImmediately(false)

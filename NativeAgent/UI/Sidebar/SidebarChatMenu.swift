@@ -21,6 +21,9 @@ struct SidebarChatMenu: NSViewRepresentable {
 
     static func items(chat: Conversation, model: WorkspaceViewModel) -> [Item] {
         [Item(id: "rename", title: "Rename…", symbol: "pencil", action: { model.renameConversation(chat) }),
+         Item(id: "pin", title: model.chatAttention[chat.id]?.pinned == true ? "Unpin chat" : "Pin chat", symbol: "pin", action: { Task { await model.setChatPinned(chat, pinned: model.chatAttention[chat.id]?.pinned != true) } }),
+         Item(id: "export-markdown", title: "Export Markdown…", symbol: "square.and.arrow.up", action: { Task { await model.features.exportChat(chat, pdf: false) } }),
+         Item(id: "export-pdf", title: "Export PDF…", symbol: "doc", action: { Task { await model.features.exportChat(chat, pdf: true) } }),
          Item(id: "move", title: "Move to", children:
             [Item(id: "standalone", title: "Standalone chats", action: { Task { await model.moveConversation(chat, to: nil) } })] +
             model.groups.map { group in

@@ -24,6 +24,9 @@ struct FeaturePanel: View {
                 case .templates: PromptLibraryPanel(features: features)
                 case .reports: TaskReportsPanel(features: features)
                 case .context: ContextInspectorPanel(features: features)
+                case .memory:
+                    if let chat = model.selectedConversation { ChatMemoryView(chat: chat.id) }
+                    else { Text("Select a chat to manage its memory.") }
                 case .queue: TaskQueuePanel(features: features)
                 case .search: WorkspaceSearchPanel(features: features)
                 case .selectedCode: selectedCode
@@ -130,6 +133,7 @@ private struct ProjectProfilePanel: View {
                     TextField("Context preferences", text: binding(\.contextNotes), axis: .vertical).lineLimit(2...5)
                     Text("Saving never runs commands. Defaults apply to new conversations; current overrides remain visible in the context inspector.").font(.caption).foregroundStyle(.secondary)
                     Button("Save project profile") { Task { if let value { await features.saveProfile(value) } } }.buttonStyle(.borderedProminent)
+                    ProjectMemoryEditor(projectID: profile.id).id(profile.id)
                 }.formStyle(.grouped)
             } else { Text("Select a project first.") }
         }.onAppear { value = features.profile ?? features.defaultProfile() }

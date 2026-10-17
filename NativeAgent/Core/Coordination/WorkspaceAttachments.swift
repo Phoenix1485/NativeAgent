@@ -5,7 +5,7 @@ extension WorkspaceFeaturesController {
     func chooseAttachments() async {
         let panel = NSOpenPanel()
         panel.canChooseDirectories = false; panel.allowsMultipleSelection = true
-        panel.message = "Attach UTF-8 text or code files (up to 1 MiB total). Contents are sent with your next message."
+        panel.message = "Attach text/code (1 MiB total), images or PDFs (8 MiB each / 12 MiB total). Media requires ChatGPT and a model that accepts it."
         guard panel.runModal() == .OK else { return }
         await attachURLs(panel.urls)
     }
@@ -19,6 +19,12 @@ extension WorkspaceFeaturesController {
         guard urls.count <= 24 else { notice = "Attach at most 24 files at once."; return }
         for url in urls {
             do {
+                if MediaAttachmentService.supports(url) {
+                    let item = try await Task.detached { try MediaAttachmentService.load(url) }.value
+                    guard model.selectedConversation?.id == owner, contextOwner == owner else { return }
+                    if !context.contains(where: { $0.sourceURL == item.sourceURL }) { await addContext(item) }
+                    continue
+                }
                 let file = try await attachedFiles.load(url)
                 guard model.selectedConversation?.id == owner, contextOwner == owner else {
                     notice = "Conversation changed. Remaining files were not attached."; return
@@ -32,7 +38,7 @@ extension WorkspaceFeaturesController {
     }
 
     func setFileEditable(_ id: UUID, enabled: Bool) async {
-        guard model?.isWorking == false, let index = context.firstIndex(where: { $0.id == id }), context[index].sourceURL != nil else { return }
+        guard model?.isWorking == false, let index = context.firstIndex(where: { $0.id == id }), context[index].sourceURL != nil, !context[index].isMedia else { return }
         context[index].allowEdits = enabled
         do { try await saveContext() } catch { fail(error) }
     }

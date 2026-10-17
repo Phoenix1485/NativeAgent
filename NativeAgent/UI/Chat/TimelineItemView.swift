@@ -6,6 +6,7 @@ struct TimelineItemView: View {
     @State private var expanded = false
     @State private var fullText: String?
     @State private var loadingText = false
+    @State private var editingPrompt = false
     private var displayText: String { fullText ?? String(item.text.prefix(8_000)) }
 
     var body: some View {
@@ -38,6 +39,15 @@ struct TimelineItemView: View {
             } else if fullText != nil {
                 Button("Collapse message") { fullText = nil }.buttonStyle(.plain).font(.caption).foregroundStyle(Studio.accent)
             }
+            if !item.isStreaming {
+                if item.kind == .userMessage {
+                    Button("Edit & resend…") { editingPrompt = true }.font(.caption).buttonStyle(.plain).foregroundStyle(Studio.accent).disabled(model.isWorking)
+                } else if item.kind == .agentMessage || item.kind == .error {
+                    Button(item.kind == .agentMessage ? "Regenerate in a new branch…" : "Retry in a new branch…") {
+                        Task { await model.features.prepareRetry(item) }
+                    }.font(.caption).buttonStyle(.plain).foregroundStyle(Studio.accent).disabled(model.isWorking)
+                }
+            }
         }
         .padding(18)
         .background(background, in: RoundedRectangle(cornerRadius: 14))
@@ -49,6 +59,7 @@ struct TimelineItemView: View {
             Button("Task reports") { model.features.execute(.reports) }
         }
         .onDisappear { fullText = nil }
+        .sheet(isPresented: $editingPrompt) { EditPromptView(item: item).environmentObject(model) }
     }
 
     private var icon: String {
@@ -65,4 +76,26 @@ struct TimelineItemView: View {
     }
     private var color: Color { item.kind == .error ? .red : (item.kind == .userMessage ? .secondary : Studio.accent) }
     private var background: Color { item.kind == .userMessage ? Studio.surface : .clear }
+}
+
+private struct EditPromptView: View {
+    @EnvironmentObject private var model: WorkspaceViewModel
+    @Environment(\.dismiss) private var dismiss
+    let item: TimelineEntry
+    @State private var text = ""
+    @State private var loaded = false
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Edit message").font(.title2)
+            Text("Continue in a new chat with the earlier messages. The original remains unchanged. Review the new draft before sending.").font(.caption)
+            TextEditor(text: $text).disabled(!loaded)
+            HStack {
+                Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
+                Spacer()
+                Button("Create retry draft") { Task { await model.features.prepareRetry(item, prompt: text); dismiss() } }
+                    .disabled(!loaded || model.isWorking || text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+        }.padding(24).frame(width: 640, height: 440)
+            .task { text = await model.fullMessageText(item.id) ?? item.text; loaded = true }
+    }
 }
