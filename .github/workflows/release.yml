@@ -29,7 +29,7 @@ jobs:
         run: |
           swift test --disable-sandbox -j 4
           python3 -m unittest discover -s Scripts/tests
-          bash -n Scripts/build-release.sh Scripts/publish-release.sh
+          bash -n Scripts/build-release.sh Scripts/publish-release.sh Scripts/build-installer.sh Scripts/verify-installer.sh
           swift Scripts/tests/verify-update-tests.swift
 
   deploy:
@@ -72,10 +72,16 @@ jobs:
           gh release download "$RELEASE_TAG" --repo "$GH_REPO" --dir dist/download \
             --pattern "NativeAgent-$build.zip" --pattern appcast.xml --pattern release.json --pattern SHA256SUMS.txt
           python3 Scripts/release-tools.py metadata dist/download/release.json "$RELEASE_TAG" "$commit"
+          installer_args=()
+          if [[ "$(python3 -c 'import json; print(json.load(open("dist/download/release.json")).get("format", "zip"))')" == dmg ]]; then
+            gh release download "$RELEASE_TAG" --repo "$GH_REPO" --dir dist/download --pattern "NativeAgent-$build.dmg"
+            bash Scripts/verify-installer.sh "dist/download/NativeAgent-$build.dmg"
+            installer_args=(--installer "dist/download/NativeAgent-$build.dmg")
+          fi
           key=$(/usr/libexec/PlistBuddy -c 'Print :SUPublicEDKey' NativeAgent/Resources/Info.plist)
           swift Scripts/verify-update.swift "$key" dist/download/appcast.xml "dist/download/NativeAgent-$build.zip"
           python3 Scripts/prepare-update-site.py --source Site --destination dist/site \
-            --archive "dist/download/NativeAgent-$build.zip" --appcast dist/download/appcast.xml \
+            --archive "dist/download/NativeAgent-$build.zip" "${installer_args[@]}" --appcast dist/download/appcast.xml \
             --repository "$GH_REPO" --tag "$RELEASE_TAG" --commit "$commit" --notarized true
           cmp dist/download/release.json dist/site/release.json
           cmp dist/download/SHA256SUMS.txt dist/site/SHA256SUMS.txt

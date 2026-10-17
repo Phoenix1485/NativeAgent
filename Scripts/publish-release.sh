@@ -87,7 +87,7 @@ export CLANG_MODULE_CACHE_PATH="$PWD/.build/clang-cache"
 echo 'Running tests against the exact source snapshot to be released...'
 swift test --disable-sandbox -j 4
 python3 -m unittest discover -s Scripts/tests
-bash -n Scripts/build-release.sh Scripts/publish-release.sh
+bash -n Scripts/build-release.sh Scripts/publish-release.sh Scripts/build-installer.sh Scripts/verify-installer.sh
 swift Scripts/tests/verify-update-tests.swift
 export NATIVEAGENT_UNIVERSAL=1
 unset NATIVEAGENT_BUILD_NUMBER
@@ -114,8 +114,17 @@ ditto -c -k --sequesterRsrc --keepParent "$app" "$archive"
 "$sparkle_bin/generate_appcast" --account "$sparkle_account" --maximum-deltas 0 \
     --download-url-prefix "https://github.com/$repository/releases/download/$tag/" --link "$site_url" "$archive_dir"
 swift Scripts/verify-update.swift "$expected_key" "$archive_dir/appcast.xml" "$archive"
+# Create the DMG after generating the feed so Sparkle only sees the ZIP update.
+installer="$archive_dir/NativeAgent-$build.dmg"
+bash Scripts/build-installer.sh "$app" "$installer"
+codesign --sign "$NATIVEAGENT_SIGNING_IDENTITY" --timestamp --identifier dev.nativeagent.mac.installer "$installer"
+xcrun notarytool submit "$installer" --keychain-profile "$notary_profile" --wait --output-format json > "$run_dir/installer-notarization.json"
+python3 Scripts/release-tools.py notarization "$run_dir/installer-notarization.json"
+xcrun stapler staple "$installer"
+bash Scripts/verify-installer.sh "$installer"
+spctl --assess --type open --context context:primary-signature --verbose=2 "$installer"
 python3 Scripts/prepare-update-site.py --source Site --destination "$run_dir/site" --app "$app" \
-    --archive "$archive" --appcast "$archive_dir/appcast.xml" --repository "$repository" \
+    --archive "$archive" --installer "$installer" --appcast "$archive_dir/appcast.xml" --repository "$repository" \
     --tag "$tag" --commit "$commit" --notarized true
 cp "$run_dir/site/release.json" "$run_dir/site/SHA256SUMS.txt" "$archive_dir/"
 echo "Verified release artifacts: $archive_dir"
@@ -132,9 +141,9 @@ check_remote
 git push --atomic origin "$commit:refs/heads/main" "$commit:refs/tags/$tag"
 git tag "$tag" "$commit"
 echo "Source and tag pushed. Preparing draft release $tag..."
-gh release create "$tag" "$archive" "$archive_dir/appcast.xml" "$archive_dir/release.json" "$archive_dir/SHA256SUMS.txt" \
+gh release create "$tag" "$installer" "$archive" "$archive_dir/appcast.xml" "$archive_dir/release.json" "$archive_dir/SHA256SUMS.txt" \
     --repo "$repository" --verify-tag --draft --title "NativeAgent $version ($build)" \
-    --notes "Universal macOS 14+ app. Developer ID signed and Apple-notarized. Archive and feed are Ed25519-signed locally. Source: $commit."
+    --notes "Download NativeAgent-$build.dmg for first-time installation: open it, then drag NativeAgent into Applications. Future updates appear in the app. The ZIP is for the automatic updater. Universal macOS 14+ app and DMG are Developer ID signed and Apple-notarized. Update archive and feed are Ed25519-signed locally. Source: $commit."
 # A failed upload leaves only a draft, never a broken public update.
 gh release edit "$tag" --repo "$repository" --draft=false --latest
 echo "Published https://github.com/$repository/releases/tag/$tag"

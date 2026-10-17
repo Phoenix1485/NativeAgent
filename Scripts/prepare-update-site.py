@@ -63,6 +63,7 @@ def main():
     for arg in ("source", "destination", "archive", "appcast", "repository", "tag", "commit", "notarized"):
         parser.add_argument("--" + arg, required=True)
     parser.add_argument("--app")
+    parser.add_argument("--installer", help="Signed/notarized DMG for manual installs; Sparkle keeps its ZIP")
     args = parser.parse_args()
     archive = Path(args.archive)
     archive_info = read_archive_info(archive)
@@ -84,19 +85,30 @@ def main():
     if args.notarized != "true" or not re.fullmatch(r"[0-9a-f]{40}", args.commit):
         raise ValueError("A notarized release and full source commit are required")
     feed = Path(args.appcast).read_bytes()
-    download = validate_feed(feed, archive, args.repository, args.tag, info)
+    update_download = validate_feed(feed, archive, args.repository, args.tag, info)
+    download = update_download
+    archive_digest = hashlib.sha256(archive.read_bytes()).hexdigest()
+    digest = archive_digest
+    checksums = f"{archive_digest}  {archive.name}\n"
+    if args.installer:
+        installer = Path(args.installer)
+        if installer.name != f"NativeAgent-{info['CFBundleVersion']}.dmg" or installer.is_symlink() or not installer.is_file() or installer.stat().st_size == 0:
+            raise ValueError("Expected a nonempty, canonically named DMG installer")
+        digest = hashlib.sha256(installer.read_bytes()).hexdigest()
+        download = f"https://github.com/{args.repository}/releases/download/{args.tag}/{quote(installer.name)}"
+        checksums += f"{digest}  {installer.name}\n"
     destination = Path(args.destination)
     shutil.copytree(args.source, destination, dirs_exist_ok=True)
     # Do not parse/reserialize the feed: its exact bytes are signed by Sparkle.
     shutil.copyfile(args.appcast, destination / "appcast.xml")
-    digest = hashlib.sha256(archive.read_bytes()).hexdigest()
-    (destination / "SHA256SUMS.txt").write_text(f"{digest}  {archive.name}\n")
+    (destination / "SHA256SUMS.txt").write_text(checksums)
     (destination / ".nojekyll").touch()
     (destination / "release.json").write_text(json.dumps({
         "version": info["CFBundleShortVersionString"], "build": info["CFBundleVersion"],
         "download": download, "sha256": digest, "commit": args.commit,
         "notarized": args.notarized == "true",
-        "release": f"https://github.com/{args.repository}/releases/tag/{args.tag}"
+        "release": f"https://github.com/{args.repository}/releases/tag/{args.tag}",
+        **({"format": "dmg", "updateDownload": update_download, "updateSha256": archive_digest} if args.installer else {})
     }, indent=2) + "\n")
 
 

@@ -1,6 +1,7 @@
 import base64
 import importlib.util
 import json
+import hashlib
 import plistlib
 import subprocess
 import sys
@@ -58,19 +59,39 @@ class UpdateSiteTests(unittest.TestCase):
         site = root / "site"
         site.mkdir()
         (site / "index.html").write_text("<!doctype html><title>Fixture</title>")
+        installer = root / "NativeAgent-1001.1.dmg"
+        installer.write_bytes(b"DMG fixture; real signing and mounting are tested by release tools")
         for name, extra in [("local", ["--app", str(app)]), ("ci", [])]:
             destination = root / name
             subprocess.run([sys.executable, str(Path(module.__file__)), "--source", str(site),
                             "--destination", str(destination), "--archive", str(self.archive),
-                            "--appcast", str(root / "appcast.xml"), "--repository", "Phoenix1485/NativeAgent",
+                            "--appcast", str(root / "appcast.xml"), "--installer", str(installer), "--repository", "Phoenix1485/NativeAgent",
                             "--tag", "v0.5.0-build.1001.1", "--commit", "a" * 40, "--notarized", "true", *extra],
                            check=True, capture_output=True)
             self.assertEqual((destination / "appcast.xml").read_bytes(), feed)
             data = json.loads((destination / "release.json").read_text())
             self.assertEqual(data["commit"], "a" * 40)
             self.assertIs(data["notarized"], True)
+            self.assertEqual(data["format"], "dmg")
+            self.assertTrue(data["download"].endswith("/NativeAgent-1001.1.dmg"))
+            self.assertEqual(data["sha256"], hashlib.sha256(installer.read_bytes()).hexdigest())
+            self.assertEqual(data["updateDownload"], self.url)
+            self.assertEqual(data["updateSha256"], hashlib.sha256(self.archive.read_bytes()).hexdigest())
+            checksums = (destination / "SHA256SUMS.txt").read_text()
+            self.assertIn(installer.name, checksums)
+            self.assertIn(self.archive.name, checksums)
         for name in ["release.json", "SHA256SUMS.txt", "appcast.xml"]:
             self.assertEqual((root / "local" / name).read_bytes(), (root / "ci" / name).read_bytes())
+        # Reject a wrongly named, missing or empty manual installer before staging.
+        for candidate in [root / "wrong.dmg", installer]:
+            candidate.write_bytes(b"" if candidate == installer else b"wrong name")
+            result = subprocess.run([sys.executable, str(Path(module.__file__)), "--source", str(site),
+                                    "--destination", str(root / "invalid"), "--archive", str(self.archive),
+                                    "--appcast", str(root / "appcast.xml"), "--installer", str(candidate),
+                                    "--repository", "Phoenix1485/NativeAgent", "--tag", "v0.5.0-build.1001.1",
+                                    "--commit", "a" * 40, "--notarized", "true"], capture_output=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertFalse((root / "invalid").exists())
 
     def test_archive_rejects_a_numbered_or_second_app_bundle(self):
         info = plistlib.dumps({"CFBundleIdentifier": "dev.nativeagent.mac"})

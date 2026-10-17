@@ -44,6 +44,8 @@ Use `--check` for preflight or `--dry-run` to complete signing and Apple notariz
 
 ## First use
 
+Download the `.dmg` from [GitHub Pages](https://phoenix1485.github.io/NativeAgent/), double-click it, and drag NativeAgent onto the Applications shortcut. Launch it from Applications, then eject the disk image. If replacing an older app, quit it first and choose Replace; chats and settings are kept. Future releases install through Settings → Updates, without another manual download. The ZIP release asset is only for the automatic updater.
+
 1. In welcome setup, choose **ChatGPT → Account sign-in**. No executable is required.
 2. Choose **Continue with ChatGPT**, authorize NativeAgent in the browser, and return to the app. Saved registrations appear in the account picker; select **Add another account or workspace** for a new registration. **Reconnect saved account** uses only NativeAgent's saved session. Provider eligibility applies; sign-in is not proof of commercial distribution approval. API billing is never selected automatically.
 3. Under **Models**, enable/disable models, star favorites, choose the default, and select supported thinking levels for native providers. Codex discovers its catalog; Grok publishes its session catalog after a workspace session is created. Claude models are chosen using **/model** in the official terminal. A listed model does not prove entitlement.

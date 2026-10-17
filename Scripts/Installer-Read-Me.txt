@@ -1,0 +1,17 @@
+INSTALL NATIVEAGENT
+
+1. Drag NativeAgent.app onto the Applications folder in this window.
+2. If replacing an older copy, quit it first and choose Replace when Finder asks.
+3. Open NativeAgent from Applications, not from this disk image.
+4. Eject the NativeAgent disk image when installation is complete.
+
+Your existing chats, settings and login credentials are kept.
+
+FUTURE UPDATES
+
+Open Settings > Updates. Keep automatic checks and downloads enabled.
+Available updates appear at the top of the chat and replace this same app.
+You do not need to download another installer for each version.
+
+If macOS reports a malware warning, do not bypass it. Only download from:
+https://phoenix1485.github.io/NativeAgent/

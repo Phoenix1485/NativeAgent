@@ -23,7 +23,12 @@ The default local identity is `Developer ID Application: Len Knoche (N5ZXADUHPB)
 bash Scripts/publish-release.sh --publish
 ```
 
-The command validates credentials and remote history, tests an isolated committed snapshot, builds a universal app, signs nested helpers and the app with hardened runtime, submits to Apple's notary service, requires `Accepted`, staples and verifies the ticket, and checks Gatekeeper. Only then does it ZIP and Sparkle-sign the final bytes. The feed and archive signatures are independently verified with the embedded public key. No provider executable is launched by the release process.
+The command validates credentials and remote history, tests an isolated committed snapshot, builds a universal app, signs nested helpers and the app with hardened runtime, submits to Apple's notary service, requires `Accepted`, staples and verifies the ticket, and checks Gatekeeper. It then creates two artifacts:
+
+- `NativeAgent-BUILD.zip`: the internal Sparkle update, with an Ed25519-signed feed and archive. Existing installed clients keep their compatible update format.
+- `NativeAgent-BUILD.dmg`: the website's manual installer, containing the same stapled app, an Applications shortcut and instructions. A compressed, read-only HFS+ image preserves the Finder icon layout. Both the DMG and app are Developer ID signed and Apple-notarized; the DMG gets its own stapled ticket and Gatekeeper assessment.
+
+DMG creation runs locally in a logged-in macOS desktop session and may ask permission to control Finder. Only the temporary image's window is customized, never global Finder settings. No provider executable or app is launched. Temporary packaging folders are retained for diagnosis. `release.json` points `download`/`sha256` at the DMG, and `updateDownload`/`updateSha256` at the ZIP. Checksums cover both artifacts. CI verifies the DMG's signature, expected developer team and stapled ticket without mounting or executing it, then compares regenerated metadata/checksums and preserves the signed feed byte-for-byte.
 
 It atomically pushes `main` and `vVERSION-build.BUILD` without force, uploads all assets to a draft release, then publishes it. GitHub Actions verifies the signatures and metadata before deploying the unchanged signed feed and static site. This is asynchronous: check the **Tests and signed release deployment** workflow in GitHub Actions before announcing the release. No signing secret is needed by that workflow.
 
@@ -45,6 +50,8 @@ bash Scripts/publish-release.sh --dry-run
 
 ## Installing the first update-enabled app
 
-Older NativeAgent builds do not contain Sparkle. Install the first signed release manually by extracting the ZIP and moving `NativeAgent.app` into Applications. Thereafter, do not download each release ZIP again: Archive Utility will create names such as `NativeAgent 2.app` when another extracted copy is present. Use NativeAgent → Check for Updates… instead. The app reads the signed GitHub Pages feed, downloads the verified release, and replaces the running app bundle at its existing path on quit. A first-launch download confirmation can still appear for correctly signed/notarized software; never override a malware warning.
+Older NativeAgent builds do not contain Sparkle. Download the DMG from the website, open it, and drag `NativeAgent.app` onto the Applications shortcut. Quit an older installed copy first and choose Replace if Finder asks. Open the app from Applications, then eject the image. Do not run the app from the read-only installer. Browser settings determine where downloads are saved; normally Downloads.
+
+Thereafter use Settings → Updates or NativeAgent → Check for Updates…. The app reads the signed GitHub Pages feed, downloads its verified ZIP internally, and replaces the running app bundle at its existing path on quit. Users do not manually extract that ZIP. A first-launch download confirmation can still appear for correctly signed/notarized software; never override a malware warning.
 
 The script automates release creation, not approval of provider access or commercial distribution rights. Signing/notarization does not establish provider entitlement. Protect GitHub maintainer access and keep signing-key backups private.
