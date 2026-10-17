@@ -9,7 +9,15 @@ final class WorkspaceViewModel: ObservableObject {
     @Published var groups: [ChatGroup] = []
     @Published var selectedGroupID: UUID?
     @Published var expandedGroupIDs: Set<UUID> = []
-    @Published var selectedProject: Project?
+    @Published var selectedProject: Project? {
+        didSet {
+            if oldValue?.id != selectedProject?.id || oldValue?.canonicalPath != selectedProject?.canonicalPath {
+                resetFileSelection()
+                workspaceLoadVersion = UUID(); workspaceLoadedID = nil
+                rootFiles = []; selectedChange = nil; diffText = ""; gitSnapshot = GitSnapshot()
+            }
+        }
+    }
     @Published var selectedConversation: Conversation? {
         didSet {
             if oldValue?.id != selectedConversation?.id {
@@ -32,6 +40,8 @@ final class WorkspaceViewModel: ObservableObject {
     @Published var rootFiles: [FileNode] = []
     @Published var selectedFile: FileNode?
     @Published var filePreview: FilePreview?
+    @Published private(set) var filePreviewLoading = false
+    @Published private(set) var filePreviewError: String?
     @Published var gitSnapshot = GitSnapshot()
     @Published var selectedChange: GitFileChange?
     @Published var diffText = ""
@@ -48,7 +58,12 @@ final class WorkspaceViewModel: ObservableObject {
     @Published var showChatGPTPlanWelcome = false
     var directChatGPT: Bool { settings.provider == .codex && settings.profile(.codex).method == .account }
     var providerCapabilities: ProviderCapabilities { providerInspection?.capabilities ?? .init() }
-    @Published var archivedConversations: [Conversation] = []
+    @Published private(set) var archiveEntries: [ArchivedConversation] = []
+    @Published private(set) var archiveQuery = ArchiveQuery()
+    @Published private(set) var archiveTotalCount = 0
+    @Published private(set) var archiveError: String?
+    @Published private(set) var archiveOperationIDs: Set<UUID> = []
+    var archivedConversations: [Conversation] { archiveEntries.map(\.conversation) }
     @Published var archiveHasMore = false
     @Published var archiveLoading = false
     @Published var searchResults: [Conversation] = []
@@ -120,6 +135,9 @@ final class WorkspaceViewModel: ObservableObject {
     private var loadingScopes: Set<String> = []
     private var searchQuery = ""
     private var searchVersion = UUID()
+    private var archiveVersion = UUID()
+    private var archiveHasLoaded = false
+    private var archiveMaintenanceRunning = false
     private var maintenanceTask: Task<Void, Never>?
     private var persistenceTask: Task<Void, Never>?
     private var memoryPreparationTask: Task<String, Error>?
@@ -127,6 +145,8 @@ final class WorkspaceViewModel: ObservableObject {
     private var startupConnectionAttempted = false
     private var lastStreamSave = Date.distantPast
     private var workspaceLoadedID: UUID?
+    private var workspaceLoadVersion = UUID()
+    private var filePreviewVersion = UUID()
     @Published private(set) var modelSwitching = false
     private var draftLoaded = true
     private var archivingIDs: Set<UUID> = []
@@ -300,47 +320,111 @@ final class WorkspaceViewModel: ObservableObject {
             searchResults.removeAll { $0.id == chat.id }
             await refreshChatAttention()
             if selectedConversation?.id == chat.id { await selectGroup(chat.groupID) }
+            await maintainArchive()
+            if archiveHasLoaded { await loadArchive() }
         } catch { show(error) }
     }
 
-    func loadArchive(more: Bool = false) async {
-        guard !archiveLoading else { return }
+    /// Opening and periodic maintenance are separate from typing in the archive search field.
+    func openArchive() async { await maintainArchive() }
+
+    func loadArchive(query: ArchiveQuery? = nil, more: Bool = false) async {
+        let requestedQuery = query ?? archiveQuery
+        if more && (archiveLoading || !archiveHasMore || requestedQuery != archiveQuery) { return }
+        let queryChanged = requestedQuery != archiveQuery
+        let version = UUID()
+        archiveVersion = version
+        archiveQuery = requestedQuery
+        let cursor = more ? archiveEntries.last?.conversation : nil
+        if !more {
+            if queryChanged { archiveEntries = [] }
+            archiveHasMore = false
+        }
+        archiveError = nil
         archiveLoading = true
-        defer { archiveLoading = false }
+        defer { if archiveVersion == version { archiveLoading = false } }
         do {
-            await maintainArchive()
-            let page = try await database.conversationPage(archived: true, after: more ? archivedConversations.last : nil)
-            if !more { archivedConversations = [] }
-            let existing = Set(archivedConversations.map(\.id))
-            archivedConversations += page.filter { !existing.contains($0.id) }
+            if queryChanged && !more { try await Task.sleep(for: .milliseconds(250)) }
+            guard !Task.isCancelled, archiveVersion == version else { return }
+            let now = Date.now
+            let page = try await database.archivePage(query: requestedQuery, after: cursor, now: now)
+            let total = try await database.archivedConversationCount(now: now)
+            guard !Task.isCancelled, archiveVersion == version else { return }
+            if !more { archiveEntries = [] }
+            let existing = Set(archiveEntries.map(\.id))
+            archiveEntries += page.filter { !existing.contains($0.id) }
+            archiveTotalCount = total
             archiveHasMore = page.count == 50
-        } catch { show(error) }
+            archiveHasLoaded = true
+        } catch is CancellationError { }
+        catch {
+            guard !Task.isCancelled, archiveVersion == version else { return }
+            archiveError = error.localizedDescription
+        }
     }
 
     func restoreArchived(_ chat: Conversation) async {
+        guard !archiveOperationIDs.contains(chat.id) else { return }
+        archiveOperationIDs.insert(chat.id)
+        archiveError = nil
+        defer { archiveOperationIDs.remove(chat.id) }
         do {
             guard try await database.restoreConversation(id: chat.id) else {
-                archivedConversations.removeAll { $0.id == chat.id }
-                show(NativeAgentError.unsupported("This chat’s 30-day recovery period has expired.")); return
+                await refreshArchiveAfterRemoving(chat.id)
+                archiveError = "This chat is no longer available to restore. Its recovery period may have expired."
+                return
             }
-            var restored = chat; restored.archivedAt = nil
-            upsertChat(restored)
-            archivedConversations.removeAll { $0.id == chat.id }
-            if let group = restored.groupID { expand(group, expanded: true) }
+            if let restored = try await database.conversation(id: chat.id) {
+                upsertChat(restored)
+                if let group = restored.groupID { expand(group, expanded: true) }
+            }
+            await refreshArchiveAfterRemoving(chat.id)
             await refreshChatAttention()
-        } catch { show(error) }
+        } catch { archiveError = error.localizedDescription }
+    }
+
+    /// Only the archived local library record is deleted; workspace files are untouched.
+    func deleteArchived(_ chat: Conversation) async {
+        guard !archiveOperationIDs.contains(chat.id) else { return }
+        guard activeConversationID != chat.id else {
+            archiveError = "Stop this chat’s current turn before deleting it."
+            return
+        }
+        archiveOperationIDs.insert(chat.id)
+        archiveError = nil
+        defer { archiveOperationIDs.remove(chat.id) }
+        do {
+            _ = try await database.deleteArchivedConversation(id: chat.id)
+            await refreshArchiveAfterRemoving(chat.id)
+        } catch { archiveError = error.localizedDescription }
+    }
+
+    private func refreshArchiveAfterRemoving(_ id: UUID) async {
+        archiveEntries.removeAll { $0.id == id }
+        await loadArchive()
     }
 
     func maintainArchive() async {
+        guard !archiveMaintenanceRunning else { return }
+        archiveMaintenanceRunning = true
+        defer { archiveMaintenanceRunning = false }
+        var needsRefresh = false
         do {
             while !Task.isCancelled {
                 let purged = try await database.purgeExpiredArchive()
                 let ids = Set(purged)
-                archivedConversations.removeAll { ids.contains($0.id) }
+                if !ids.isEmpty {
+                    needsRefresh = needsRefresh || archiveHasLoaded || archiveLoading
+                    archiveVersion = UUID()
+                    archiveLoading = false
+                }
+                archiveEntries.removeAll { ids.contains($0.id) }
                 if purged.count < 100 { break }
                 await Task.yield()
             }
-        } catch { show(error) }
+            archiveTotalCount = try await database.archivedConversationCount()
+            if needsRefresh { await loadArchive() }
+        } catch { archiveError = error.localizedDescription }
     }
 
     func refreshSavedKeys() {
@@ -815,8 +899,8 @@ final class WorkspaceViewModel: ObservableObject {
 
     private func loadWorkspace() async {
         if workspaceLoadedID == selectedProject?.id { return }
-        selectedFile = nil
-        filePreview = nil
+        let version = UUID(); workspaceLoadVersion = version
+        resetFileSelection()
         selectedChange = nil
         diffText = ""
         rootFiles = []
@@ -825,7 +909,8 @@ final class WorkspaceViewModel: ObservableObject {
         guard inspectorVisible, let project = selectedProject else { return }
         let nodes = try? await files.children(root: project.canonicalPath)
         let status = try? await git.status(at: project.canonicalPath)
-        guard selectedProject?.id == project.id else { return }
+        guard workspaceLoadVersion == version, selectedProject?.id == project.id,
+              selectedProject?.canonicalPath == project.canonicalPath else { return }
         rootFiles = nodes ?? []
         gitSnapshot = status ?? GitSnapshot()
         workspaceLoadedID = project.id
@@ -1287,17 +1372,50 @@ final class WorkspaceViewModel: ObservableObject {
     }
 
     func selectFile(_ node: FileNode) async {
-        features.selectedCode = ""; features.selectedLines = nil
         guard !node.isDirectory, let project = selectedProject else { return }
+        resetFileSelection()
+        let version = filePreviewVersion
         selectedFile = node
-        do { filePreview = try await files.preview(root: project.canonicalPath, relativePath: node.relativePath) }
-        catch { filePreview = nil; show(error) }
+        filePreviewLoading = true
+        defer { if filePreviewVersion == version { filePreviewLoading = false } }
+        do {
+            try Task.checkCancellation()
+            let preview = try await files.preview(root: project.canonicalPath, relativePath: node.relativePath)
+            try Task.checkCancellation()
+            guard filePreviewVersion == version, selectedProject?.id == project.id,
+                  selectedProject?.canonicalPath == project.canonicalPath else { return }
+            filePreview = preview
+        } catch {
+            guard filePreviewVersion == version, selectedProject?.id == project.id,
+                  selectedProject?.canonicalPath == project.canonicalPath, !Task.isCancelled else { return }
+            filePreviewError = error.localizedDescription
+        }
+    }
+
+    private func resetFileSelection() {
+        filePreviewVersion = UUID()
+        selectedFile = nil; filePreview = nil
+        filePreviewLoading = false; filePreviewError = nil
+        features.selectedCode = ""; features.selectedLines = nil
     }
 
     func loadChildren(of node: FileNode) async -> [FileNode] {
         guard node.isDirectory, let project = selectedProject else { return [] }
-        do { return try await files.children(root: project.canonicalPath, relativePath: node.relativePath) }
-        catch { show(error); return [] }
+        let version = workspaceLoadVersion
+        do {
+            let children = try await files.children(root: project.canonicalPath, relativePath: node.relativePath)
+            guard workspaceLoadVersion == version, selectedProject?.id == project.id,
+                  selectedProject?.canonicalPath == project.canonicalPath, !Task.isCancelled else { return [] }
+            return children
+        } catch {
+            if workspaceLoadVersion == version, selectedProject?.id == project.id,
+               selectedProject?.canonicalPath == project.canonicalPath, !Task.isCancelled { show(error) }
+            return []
+        }
+    }
+
+    func searchFiles(root: String, query: String, filter: FileBrowserFilter) async throws -> FileSearchResult {
+        try await files.search(root: root, query: query, filter: filter)
     }
 
     func refreshGit() async {

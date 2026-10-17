@@ -1,8 +1,68 @@
 import XCTest
 import PDFKit
+import CSQLite
 @testable import NativeAgent
 
 final class LibraryBackupTests: XCTestCase {
+    func testArchiveCountersSurviveBackupRestoreAndVersionFiveMigration() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let original = try DatabaseActor(url: directory.appendingPathComponent("original.sqlite3"))
+        let chat = Conversation(title: "Archive migration")
+        try await original.save(conversation: chat)
+        try await original.saveDraft("🙂 archived draft", conversationID: chat.id)
+        try await original.archiveConversation(id: chat.id)
+        let backups = try await original.backupLibrary()
+        let backup = try XCTUnwrap(backups.first)
+        let expected = try await original.archivePage().first?.storedBytes
+        try LibrarySnapshots.validate(backup)
+        // A genuine version-five backup has no accounting triggers/column yet.
+        let dropTriggers = ArchiveStorageSchema.triggers.keys.sorted().map { "DROP TRIGGER \($0);" }.joined(separator: "\n")
+        try updateFixture(backup, sql: """
+        \(dropTriggers)
+        DROP INDEX conversations_archive_page;
+        DROP INDEX features_conversation;
+        DROP INDEX attachments_conversation;
+        ALTER TABLE conversations DROP COLUMN stored_bytes;
+        DELETE FROM schema_migrations WHERE version=6;
+        """)
+        try LibrarySnapshots.validate(backup)
+        let target = directory.appendingPathComponent("restored.sqlite3")
+        try LibrarySnapshots.stage(source: backup, database: target)
+        let restored = try DatabaseActor(url: target)
+        let page = try await restored.archivePage()
+        XCTAssertEqual(page.first?.storedBytes, expected)
+        XCTAssertEqual(page.first?.id, chat.id)
+        let upgradedBackups = try await restored.backupLibrary()
+        let upgraded = try XCTUnwrap(upgradedBackups.first)
+        try LibrarySnapshots.validate(upgraded)
+    }
+
+    func testBackupRejectsUnknownAndModifiedStorageTriggers() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let database = try DatabaseActor(url: directory.appendingPathComponent("library.sqlite3"))
+        try await database.save(conversation: Conversation())
+        let backups = try await database.backupLibrary()
+        let backup = try XCTUnwrap(backups.first)
+        try updateFixture(backup, sql: "CREATE TRIGGER unexpected AFTER INSERT ON drafts BEGIN DELETE FROM conversations; END;")
+        XCTAssertThrowsError(try LibrarySnapshots.validate(backup))
+        try updateFixture(backup, sql: "DROP TRIGGER unexpected;")
+        try LibrarySnapshots.validate(backup)
+        let name = try XCTUnwrap(ArchiveStorageSchema.triggers.keys.sorted().first)
+        try updateFixture(backup, sql: "DROP TRIGGER \(name); CREATE TRIGGER \(name) AFTER INSERT ON drafts BEGIN DELETE FROM conversations; END;")
+        XCTAssertThrowsError(try LibrarySnapshots.validate(backup))
+    }
+
+    private func updateFixture(_ url: URL, sql: String) throws {
+        var database: OpaquePointer?
+        guard sqlite3_open(url.path, &database) == SQLITE_OK else { throw NativeAgentError.unsupported("Could not open fixture") }
+        defer { sqlite3_close(database) }
+        guard sqlite3_exec(database, sql, nil, nil, nil) == SQLITE_OK else {
+            throw NativeAgentError.unsupported(String(cString: sqlite3_errmsg(database)))
+        }
+    }
+
     func testBackupRestoreIncludesWALHistoryAndKeepsSafetyCopy() async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: directory) }

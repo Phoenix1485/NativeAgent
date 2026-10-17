@@ -29,6 +29,8 @@ Date: 2026-10-11
 | Streaming UI flush interval | 100 ms; 300 ms in Low Power Mode / serious or critical thermal state |
 | Streaming database checkpoint | At most once per second during deltas, plus immediate final save |
 | Archive purge transaction | At most 100 chats per maintenance batch |
+| Large archived chat retention | 20 days for at least 10 MiB stored content while more than 30 unexpired archived chats remain; otherwise 30 days |
+| Archive size lookup | Persisted per-chat byte counter; listing/search does not read message or attachment bodies |
 | Retained diagnostic messages | 100 |
 | Active P0 provider processes | 1 |
 | Explicit context | 24 items / 1 MiB copied text total |

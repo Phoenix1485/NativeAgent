@@ -70,7 +70,7 @@ struct ProjectSidebarView: View {
             }.frame(maxHeight: .infinity)
             Rectangle().fill(Studio.line).frame(height: 1).padding(.horizontal, 16)
             Button { showingArchive = true } label: {
-                HStack { Label("Archive", systemImage: "archivebox"); Spacer(); Text("30 days").font(.system(size: 10)).foregroundStyle(.tertiary) }
+                HStack { Label("Archive", systemImage: "archivebox"); Spacer(); Text("Up to 30 days").font(.system(size: 10)).foregroundStyle(.tertiary) }
                     .font(.system(size: 12)).foregroundStyle(.secondary).padding(.horizontal, 20).padding(.top, 16)
             }.buttonStyle(.plain)
             HStack {

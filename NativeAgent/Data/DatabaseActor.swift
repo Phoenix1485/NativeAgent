@@ -134,8 +134,10 @@ actor DatabaseActor {
         var sql = "SELECT id,project_id,remote_thread_id,title,created_at,updated_at,group_id,provider_id,archived_at FROM conversations WHERE "
         var bindings: [Binding] = []
         if archived {
-            sql += "archived_at > ?"
-            bindings.append(.double(now.addingTimeInterval(-30 * 24 * 60 * 60).timeIntervalSince1970))
+            // Keep legacy callers on the same retention policy as the archive browser.
+            let retention = retainedArchivePredicate(now: now, alias: "conversations")
+            sql += retention.sql
+            bindings += retention.bindings
         } else { sql += "archived_at IS NULL" }
         if let search {
             // Treat wildcard characters literally; search all folders, not just loaded rows.
@@ -166,30 +168,113 @@ actor DatabaseActor {
         try execute("UPDATE conversations SET archived_at=? WHERE id=? AND archived_at IS NULL", [.double(now.timeIntervalSince1970), .text(id.uuidString)])
     }
 
+    /// Search and date filters apply to the whole archive, with stable archive-date keyset paging.
+    func archivePage(query archiveQuery: ArchiveQuery = .init(), after: Conversation? = nil, limit: Int = 50, now: Date = .now) throws -> [ArchivedConversation] {
+        try ensureInitialized()
+        let retention = retainedArchivePredicate(now: now, alias: "c")
+        var sql = "SELECT c.id,c.project_id,c.remote_thread_id,c.title,c.created_at,c.updated_at,c.group_id,c.provider_id,c.archived_at,c.stored_bytes FROM conversations c WHERE " + retention.sql
+        var bindings = retention.bindings
+        let search = archiveQuery.search.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !search.isEmpty {
+            let escaped = search.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "%", with: "\\%").replacingOccurrences(of: "_", with: "\\_")
+            sql += " AND c.title LIKE ? ESCAPE '\\'"
+            bindings.append(.text("%" + escaped + "%"))
+        }
+        if let from = archiveQuery.archivedFrom {
+            sql += " AND c.archived_at >= ?"
+            bindings.append(.double(from.timeIntervalSince1970))
+        }
+        if let before = archiveQuery.archivedBefore {
+            sql += " AND c.archived_at < ?"
+            bindings.append(.double(before.timeIntervalSince1970))
+        }
+        if let after, let archivedAt = after.archivedAt {
+            sql += " AND (c.archived_at < ? OR (c.archived_at = ? AND c.id < ?))"
+            bindings += [.double(archivedAt.timeIntervalSince1970), .double(archivedAt.timeIntervalSince1970), .text(after.id.uuidString)]
+        }
+        sql += " ORDER BY c.archived_at DESC,c.id DESC LIMIT ?"
+        bindings.append(.int(max(1, min(limit, 200))))
+        return try query(sql, bindings) { row in
+            var chat = Conversation(id: UUID(uuidString: row.text(0))!, projectID: row.optionalText(1).flatMap(UUID.init(uuidString:)), groupID: row.optionalText(6).flatMap(UUID.init(uuidString:)), remoteThreadID: row.optionalText(2), title: row.text(3), createdAt: Date(timeIntervalSince1970: row.double(4)), updatedAt: Date(timeIntervalSince1970: row.double(5)))
+            chat.providerID = ProviderKind(rawValue: row.text(7)) ?? .codex
+            chat.archivedAt = Date(timeIntervalSince1970: row.double(8))
+            return ArchivedConversation(conversation: chat, storedBytes: Int64(row.int(9)))
+        }
+    }
+
+    func archivedConversationCount(now: Date = .now) throws -> Int {
+        try ensureInitialized()
+        let retention = retainedArchivePredicate(now: now, alias: "c")
+        return try query("SELECT COUNT(*) FROM conversations c WHERE " + retention.sql, retention.bindings) { $0.int(0) }.first ?? 0
+    }
+
+    /// Identical eligibility for listings and restores, even before scheduled maintenance runs.
+    /// Only the oldest excess large chats expire early; the archive never shrinks below 30 for size alone.
+    private func retainedArchivePredicate(now: Date, alias: String) -> (sql: String, bindings: [Binding]) {
+        let standardCutoff = now.addingTimeInterval(-TimeInterval(ArchiveRetention.standardDays * 86_400)).timeIntervalSince1970
+        let largeCutoff = now.addingTimeInterval(-TimeInterval(ArchiveRetention.largeChatDays * 86_400)).timeIntervalSince1970
+        let sql = """
+        \(alias).archived_at > ? AND \(alias).id NOT IN (
+            SELECT aged.id FROM conversations aged
+            WHERE aged.archived_at > ? AND aged.archived_at <= ? AND aged.stored_bytes >= ?
+            ORDER BY aged.archived_at ASC,aged.id ASC
+            LIMIT (SELECT MAX(COUNT(*) - ?,0) FROM conversations WHERE archived_at > ?)
+        )
+        """
+        return (sql, [.double(standardCutoff), .double(standardCutoff), .double(largeCutoff), .int(Int(ArchiveRetention.largeChatBytes)), .int(ArchiveRetention.archiveCountThreshold), .double(standardCutoff)])
+    }
+
     func restoreConversation(id: UUID, now: Date = .now) throws -> Bool {
         try ensureInitialized()
-        try execute("UPDATE conversations SET archived_at=NULL WHERE id=? AND archived_at > ?", [.text(id.uuidString), .double(now.addingTimeInterval(-30 * 24 * 60 * 60).timeIntervalSince1970)])
+        let retention = retainedArchivePredicate(now: now, alias: "conversations")
+        try execute("UPDATE conversations SET archived_at=NULL WHERE id=? AND " + retention.sql, [.text(id.uuidString)] + retention.bindings)
         return sqlite3_changes(database) > 0
     }
 
+    /// Permanent deletion is scoped to an archived chat and its local dependent records.
+    @discardableResult
+    func deleteArchivedConversation(id: UUID) throws -> Bool {
+        try ensureInitialized()
+        try execute("BEGIN IMMEDIATE")
+        do {
+            let archived = try query("SELECT 1 FROM conversations WHERE id=? AND archived_at IS NOT NULL", [.text(id.uuidString)]) { $0.int(0) }.first != nil
+            if archived { try deleteConversationRecords(id: id) }
+            try execute("COMMIT")
+            return archived
+        } catch { try? execute("ROLLBACK"); throw error }
+    }
+
+    private func deleteConversationRecords(id: UUID) throws {
+        let binding: [Binding] = [.text(id.uuidString)]
+        try execute("DELETE FROM context_references WHERE timeline_item_id IN (SELECT id FROM timeline_items WHERE conversation_id=?)", binding)
+        try execute("DELETE FROM approval_records WHERE turn_id IN (SELECT id FROM turns WHERE conversation_id=?)", binding)
+        try execute("DELETE FROM attachments WHERE conversation_id=?", binding)
+        // Foreign keys cascade timeline, turns, drafts and conversation-scoped feature records.
+        try execute("DELETE FROM conversations WHERE id=?", binding)
+    }
+
     /// Small transactions keep maintenance from monopolizing the database actor.
+    /// Freed SQLite pages are reused; avoid a blocking whole-library VACUUM on every cleanup.
     @discardableResult
     func purgeExpiredArchive(now: Date = .now, limit: Int = 100) throws -> [UUID] {
         try ensureInitialized()
-        let ids = try query("SELECT id FROM conversations WHERE archived_at <= ? ORDER BY archived_at LIMIT ?", [.double(now.addingTimeInterval(-30 * 24 * 60 * 60).timeIntervalSince1970), .int(max(1, min(limit, 200)))]) { UUID(uuidString: $0.text(0))! }
-        guard !ids.isEmpty else { return [] }
+        let batchLimit = max(1, min(limit, 200))
+        let standardCutoff = now.addingTimeInterval(-TimeInterval(ArchiveRetention.standardDays * 86_400)).timeIntervalSince1970
+        let largeCutoff = now.addingTimeInterval(-TimeInterval(ArchiveRetention.largeChatDays * 86_400)).timeIntervalSince1970
         try execute("BEGIN IMMEDIATE")
         do {
-            for id in ids {
-                let binding: [Binding] = [.text(id.uuidString)]
-                try execute("DELETE FROM context_references WHERE timeline_item_id IN (SELECT id FROM timeline_items WHERE conversation_id=?)", binding)
-                try execute("DELETE FROM approval_records WHERE turn_id IN (SELECT id FROM turns WHERE conversation_id=?)", binding)
-                try execute("DELETE FROM attachments WHERE conversation_id=?", binding)
-                try execute("DELETE FROM conversations WHERE id=?", binding)
+            var ids = try query("SELECT id FROM conversations WHERE archived_at <= ? ORDER BY archived_at ASC,id ASC LIMIT ?", [.double(standardCutoff), .int(batchLimit)]) { UUID(uuidString: $0.text(0))! }
+            if ids.count < batchLimit {
+                let liveCount = try query("SELECT COUNT(*) FROM conversations WHERE archived_at > ?", [.double(standardCutoff)]) { $0.int(0) }.first ?? 0
+                let excess = min(batchLimit - ids.count, max(0, liveCount - ArchiveRetention.archiveCountThreshold))
+                if excess > 0 {
+                    ids += try query("SELECT id FROM conversations WHERE archived_at > ? AND archived_at <= ? AND stored_bytes >= ? ORDER BY archived_at ASC,id ASC LIMIT ?", [.double(standardCutoff), .double(largeCutoff), .int(Int(ArchiveRetention.largeChatBytes)), .int(excess)]) { UUID(uuidString: $0.text(0))! }
+                }
             }
+            for id in ids { try deleteConversationRecords(id: id) }
             try execute("COMMIT")
+            return ids
         } catch { try? execute("ROLLBACK"); throw error }
-        return ids
     }
 
     func groups() throws -> [ChatGroup] {
@@ -225,7 +310,7 @@ actor DatabaseActor {
 
     private func migrateLibrary() throws {
         let version = try query("SELECT MAX(version) FROM schema_migrations") { $0.int(0) }.first ?? 0
-        guard version <= 5 else { throw NativeAgentError.unsupported("This library was created by a newer NativeAgent version.") }
+        guard version <= 6 else { throw NativeAgentError.unsupported("This library was created by a newer NativeAgent version.") }
         guard version < 2 else { return }
         // SQLite's backup API includes committed WAL pages, unlike copying the .sqlite file.
         var backupDB: OpaquePointer?
@@ -268,7 +353,7 @@ actor DatabaseActor {
             nextOrder = maximum + 1
         }
         try execute(
-            "INSERT OR REPLACE INTO timeline_items(id,conversation_id,turn_id,kind,title,display_text,metadata_json,received_order,created_at,is_streaming) VALUES(?,?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO timeline_items(id,conversation_id,turn_id,kind,title,display_text,metadata_json,received_order,created_at,is_streaming) VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET conversation_id=excluded.conversation_id,turn_id=excluded.turn_id,kind=excluded.kind,title=excluded.title,display_text=excluded.display_text,metadata_json=excluded.metadata_json,received_order=excluded.received_order,created_at=excluded.created_at,is_streaming=excluded.is_streaming",
             [.text(entry.id.uuidString), .text(conversationID.uuidString), entry.turnID.map(Binding.text) ?? .null, .text(entry.kind.rawValue), .text(entry.title), .text(entry.text), metadata.map(Binding.text) ?? .null, .int(nextOrder), .double(entry.createdAt.timeIntervalSince1970), .int(entry.isStreaming ? 1 : 0)]
         )
     }
@@ -427,7 +512,27 @@ actor DatabaseActor {
                 try execute("COMMIT")
             } catch { try? execute("ROLLBACK"); throw error }
         }
+        if version < 6 { try migrateArchiveStorage() }
         initialized = true
+    }
+
+    private func migrateArchiveStorage() throws {
+        try execute("BEGIN IMMEDIATE")
+        do {
+            try execute("ALTER TABLE conversations ADD COLUMN stored_bytes INTEGER NOT NULL DEFAULT 0 CHECK(stored_bytes >= 0)")
+            try execute("CREATE INDEX conversations_archive_page ON conversations(archived_at DESC,id DESC) WHERE archived_at IS NOT NULL")
+            try execute("CREATE INDEX features_conversation ON feature_records(conversation_id) WHERE conversation_id IS NOT NULL")
+            try execute("CREATE INDEX attachments_conversation ON attachments(conversation_id)")
+            // One migration-time scan, entirely inside SQLite. Later writes update only one small counter.
+            for table in ArchiveStorageSchema.payloadTables {
+                try execute("UPDATE conversations SET stored_bytes = stored_bytes + COALESCE((SELECT SUM(\(table.bytes())) FROM \(table.name) WHERE conversation_id=conversations.id),0)")
+            }
+            for name in ArchiveStorageSchema.triggers.keys.sorted() {
+                try execute(ArchiveStorageSchema.triggers[name]!)
+            }
+            try execute("INSERT INTO schema_migrations(version,applied_at) VALUES(6,?)", [.double(Date.now.timeIntervalSince1970)])
+            try execute("COMMIT")
+        } catch { try? execute("ROLLBACK"); throw error }
     }
 
     func saveFeature<T: Encodable & Sendable>(_ value: T, kind: String, id: String, title: String = "", searchText: String = "", projectID: UUID? = nil, conversationID: UUID? = nil) throws {

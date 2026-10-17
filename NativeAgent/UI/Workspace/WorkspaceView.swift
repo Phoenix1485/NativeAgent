@@ -8,8 +8,13 @@ struct WorkspaceView: View {
     @State private var showDiagnostics = false
     @State private var showConversationDetails = false
     @State private var showSidebar = true
+    @StateObject private var fileBrowser: FileBrowserState
     @State private var availableWidth: CGFloat = 1280
     @Environment(\.openSettings) private var openSettings
+
+    init(fileBrowser: FileBrowserState? = nil) {
+        _fileBrowser = StateObject(wrappedValue: fileBrowser ?? FileBrowserState())
+    }
 
     var body: some View {
         workspaceLayout
@@ -24,7 +29,9 @@ struct WorkspaceView: View {
                 if model.features.paletteVisible { WorkspaceCommandPalette(features: model.features).environmentObject(model) }
                 else { FeaturePanel(features: model.features).environmentObject(model) }
             }
-            .task(id: showInspector) { await model.setInspectorVisible(showInspector) }
+            .task(id: showInspector || fileBrowser.showingTab) { await model.setInspectorVisible(showInspector || fileBrowser.showingTab) }
+            .onChange(of: model.selectedProject?.id) { fileBrowser.reset() }
+            .onChange(of: fileBrowser.showingTab) { NSApp.keyWindow?.makeFirstResponder(nil) }
             .background(GeometryReader { proxy in
                 Color.clear.onAppear { availableWidth = proxy.size.width }
                     .onChange(of: proxy.size.width) { availableWidth = proxy.size.width }
@@ -36,15 +43,45 @@ struct WorkspaceView: View {
 
     private var workspaceLayout: some View {
         HStack(spacing: 0) {
-            if showSidebar && (!showInspector || availableWidth >= 1100) {
+            if showSidebar && (!(showInspector || fileBrowser.showingTab) || availableWidth >= 1100) {
                 ProjectSidebarView().frame(width: 254).frame(maxHeight: .infinity)
                 Rectangle().fill(Studio.line).frame(width: 1)
             }
             VStack(spacing: 0) {
                 header
                 Rectangle().fill(Studio.line).frame(height: 1)
-                ConversationView().frame(maxWidth: .infinity, maxHeight: .infinity)
-                if showDiagnostics {
+                if fileBrowser.tabOpen {
+                    workspaceTabs
+                    Divider()
+                }
+                ZStack {
+                    ConversationView()
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .opacity(fileBrowser.showingTab ? 0 : 1)
+                        .allowsHitTesting(!fileBrowser.showingTab)
+                        .accessibilityHidden(fileBrowser.showingTab)
+                    if fileBrowser.tabOpen {
+                        Group {
+                            if model.selectedProject != nil {
+                                FileBrowserView(browser: fileBrowser, expanded: true, active: fileBrowser.showingTab)
+                            } else {
+                                ContentUnavailableView {
+                                    Label("Choose a working folder", systemImage: "folder")
+                                } description: {
+                                    Text("Open a folder to browse and search its files.")
+                                } actions: {
+                                    Button("Choose folder…") { model.openProject() }
+                                }
+                            }
+                        }
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .frame(width: fileBrowser.showingTab ? nil : 0, height: fileBrowser.showingTab ? nil : 0)
+                        .clipped().opacity(fileBrowser.showingTab ? 1 : 0)
+                        .allowsHitTesting(fileBrowser.showingTab)
+                        .accessibilityHidden(!fileBrowser.showingTab)
+                    }
+                }.frame(maxWidth: .infinity, maxHeight: .infinity)
+                if showDiagnostics && !fileBrowser.showingTab {
                     VStack(alignment: .leading, spacing: 8) {
                         HStack {
                             Label("Activity log", systemImage: "terminal").font(.caption.weight(.medium))
@@ -55,7 +92,7 @@ struct WorkspaceView: View {
                     }.padding(16).frame(height: 175).background(Studio.surface)
                 }
             }.frame(maxWidth: .infinity, maxHeight: .infinity)
-            if showInspector {
+            if showInspector && !fileBrowser.showingTab {
                 Rectangle().fill(Studio.line).frame(width: 1)
                 VStack(spacing: 0) {
                     HStack {
@@ -70,11 +107,38 @@ struct WorkspaceView: View {
                             Text("Choose a folder to browse files\nand review changes.").font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.center)
                             Button("Choose folder…") { model.openProject() }.buttonStyle(.bordered)
                         }.frame(maxWidth: .infinity, maxHeight: .infinity)
-                    } else if inspectorTab == "Files" { FileBrowserView().frame(maxHeight: .infinity) }
+                    } else if inspectorTab == "Files" {
+                        FileBrowserView(browser: fileBrowser, onExpand: {
+                            fileBrowser.openTab()
+                        }).frame(maxHeight: .infinity)
+                    }
                     else { ChangesView().frame(maxHeight: .infinity) }
                 }.frame(width: 300).frame(maxHeight: .infinity).background(Studio.sidebar)
             }
         }.frame(maxWidth: .infinity, maxHeight: .infinity).background(Studio.canvas).tint(Studio.accent)
+    }
+
+    private var workspaceTabs: some View {
+        HStack(spacing: 6) {
+            Button { fileBrowser.showingTab = false } label: {
+                Label("Chat", systemImage: "bubble.left")
+                    .padding(.horizontal, 12).padding(.vertical, 8)
+                    .background(!fileBrowser.showingTab ? Studio.hover : Color.clear, in: RoundedRectangle(cornerRadius: 6))
+            }.accessibilityLabel("Chat tab").accessibilityAddTraits(!fileBrowser.showingTab ? .isSelected : [])
+            HStack(spacing: 8) {
+                Button { fileBrowser.showingTab = true } label: {
+                    Label("Files", systemImage: "doc.text")
+                        .padding(.leading, 12).padding(.vertical, 8)
+                }.accessibilityLabel("Files tab").accessibilityAddTraits(fileBrowser.showingTab ? .isSelected : [])
+                Button {
+                    fileBrowser.closeTab()
+                } label: { Image(systemName: "xmark").font(.caption2).padding(6) }
+                    .help("Close Files tab").accessibilityLabel("Close Files tab")
+            }.padding(.trailing, 4)
+                .background(fileBrowser.showingTab ? Studio.hover : Color.clear, in: RoundedRectangle(cornerRadius: 6))
+            Spacer()
+        }.font(.system(size: 12, weight: .medium)).buttonStyle(.plain)
+            .padding(.horizontal, 12).padding(.vertical, 6).background(Studio.sidebar)
     }
 
     private var sessionObservers: some View {
@@ -149,7 +213,10 @@ struct WorkspaceView: View {
             Button { showConversationDetails.toggle() } label: { Image(systemName: "list.bullet.clipboard") }
                 .buttonStyle(QuietButtonStyle()).help("Conversation details").accessibilityLabel("Conversation details")
                 .popover(isPresented: $showConversationDetails, arrowEdge: .bottom) { ConversationDetailsView().environmentObject(model) }
-            Button { showInspector.toggle() } label: { Image(systemName: "sidebar.right") }.buttonStyle(QuietButtonStyle()).help("Files and changes")
+            Button {
+                if fileBrowser.showingTab { fileBrowser.showingTab = false; showInspector = true }
+                else { showInspector.toggle() }
+            } label: { Image(systemName: "sidebar.right") }.buttonStyle(QuietButtonStyle()).help("Files and changes").accessibilityLabel("Files and changes")
         }.padding(.horizontal, 18).frame(height: 64)
     }
 

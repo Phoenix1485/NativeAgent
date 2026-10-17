@@ -108,6 +108,11 @@ final class LibraryTests: XCTestCase {
         CREATE TABLE conversations(id TEXT PRIMARY KEY,project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,remote_thread_id TEXT,title TEXT NOT NULL,created_at REAL NOT NULL,updated_at REAL NOT NULL);
         CREATE TABLE drafts(conversation_id TEXT PRIMARY KEY REFERENCES conversations(id) ON DELETE CASCADE,text TEXT NOT NULL,updated_at REAL NOT NULL);
         CREATE TABLE timeline_items(id TEXT PRIMARY KEY,conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,turn_id TEXT,kind TEXT,title TEXT,display_text TEXT,metadata_json TEXT,received_order INTEGER,created_at REAL,is_streaming INTEGER);
+        CREATE TABLE provider_profiles(id TEXT PRIMARY KEY,provider_kind TEXT NOT NULL,display_name TEXT NOT NULL,binary_path TEXT,account_namespace TEXT,last_known_version TEXT);
+        CREATE TABLE turns(id TEXT PRIMARY KEY,conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,remote_turn_id TEXT,status TEXT NOT NULL,started_at REAL NOT NULL,finished_at REAL,error_code TEXT);
+        CREATE TABLE approval_records(id TEXT PRIMARY KEY,turn_id TEXT,provider_request_id TEXT NOT NULL,kind TEXT NOT NULL,summary TEXT,decision TEXT,resolved_at REAL);
+        CREATE TABLE context_references(id TEXT PRIMARY KEY,timeline_item_id TEXT NOT NULL,relative_path TEXT NOT NULL,start_line INTEGER,end_line INTEGER,content_hash TEXT,snippet TEXT);
+        CREATE TABLE attachments(id TEXT PRIMARY KEY,conversation_id TEXT NOT NULL,file_name TEXT NOT NULL,mime_type TEXT,relative_storage_path TEXT NOT NULL,size_bytes INTEGER NOT NULL,content_hash TEXT);
         INSERT INTO projects VALUES('\(projectID)','Legacy','/tmp/legacy',1,1);
         INSERT INTO conversations VALUES('\(chatID)','\(projectID)','remote-123','Existing chat',1,1);
         INSERT INTO drafts VALUES('\(chatID)','Keep this draft',1);
@@ -127,5 +132,10 @@ final class LibraryTests: XCTestCase {
         try await database.save(conversation: Conversation(title: "New standalone chat"))
         let updated = try await database.conversations()
         XCTAssertEqual(updated.count, 2)
+        try await database.archiveConversation(id: chatID)
+        let archive = try await database.archivePage()
+        XCTAssertEqual(archive.first?.storedBytes, Int64("YouKeep this historyKeep this draft".utf8.count))
+        let restored = try await database.restoreConversation(id: chatID)
+        XCTAssertTrue(restored)
     }
 }

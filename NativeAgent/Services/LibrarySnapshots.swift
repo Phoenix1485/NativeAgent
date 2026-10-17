@@ -12,16 +12,47 @@ enum LibrarySnapshots {
         guard sqlite3_open_v2(url.path, &db, SQLITE_OPEN_READONLY, nil) == SQLITE_OK else { sqlite3_close(db); throw failure("Could not open backup.") }
         defer { sqlite3_close(db) }
         guard try scalar(db, "PRAGMA quick_check") == "ok",
-              let version = Int(try scalar(db, "SELECT MAX(version) FROM schema_migrations")), (5...5).contains(version),
-              try scalar(db, "SELECT COUNT(*) FROM sqlite_master WHERE type IN ('trigger','view')") == "0" else {
+              let version = Int(try scalar(db, "SELECT MAX(version) FROM schema_migrations")), (5...6).contains(version) else {
             throw failure("This is not a compatible, healthy NativeAgent backup.")
         }
+        try validateSchemaObjects(db, version: version)
         for query in ["SELECT id,title,archived_at FROM conversations LIMIT 0", "SELECT id,conversation_id,display_text FROM timeline_items LIMIT 0", "SELECT kind,id,payload FROM feature_records LIMIT 0", "SELECT conversation_id,text FROM drafts LIMIT 0", "SELECT id,parent_id FROM chat_groups LIMIT 0"] {
             var statement: OpaquePointer?
             let code = sqlite3_prepare_v2(db, query, -1, &statement, nil); sqlite3_finalize(statement)
             guard code == SQLITE_OK else { throw failure("The backup’s library schema is incomplete.") }
         }
+        if version >= 6 {
+            guard try scalar(db, "SELECT COALESCE(SUM(stored_bytes < 0),0) FROM conversations") == "0" else {
+                throw failure("The backup contains invalid chat storage sizes.")
+            }
+        }
         guard try scalar(db, "PRAGMA foreign_key_check").isEmpty else { throw failure("The backup contains broken references.") }
+    }
+
+    private static func validateSchemaObjects(_ db: OpaquePointer?, version: Int) throws {
+        let expected = version >= 6 ? ArchiveStorageSchema.triggers : [:]
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, "SELECT type,name,sql FROM sqlite_master WHERE type IN ('trigger','view')", -1, &statement, nil) == SQLITE_OK else {
+            throw failure("Could not validate the backup’s schema.")
+        }
+        defer { sqlite3_finalize(statement) }
+        var found: Set<String> = []
+        func normalized(_ sql: String) -> String { sql.split(whereSeparator: \.isWhitespace).joined(separator: " ") }
+        while true {
+            let code = sqlite3_step(statement)
+            if code == SQLITE_DONE { break }
+            guard code == SQLITE_ROW,
+                  let type = sqlite3_column_text(statement, 0),
+                  let name = sqlite3_column_text(statement, 1),
+                  let sql = sqlite3_column_text(statement, 2) else { throw failure("Invalid backup schema.") }
+            let key = String(cString: name)
+            guard String(cString: type) == "trigger", let definition = expected[key],
+                  normalized(String(cString: sql)) == normalized(definition) else {
+                throw failure("The backup contains an unexpected schema trigger or view.")
+            }
+            found.insert(key)
+        }
+        guard found == Set(expected.keys) else { throw failure("The backup’s storage accounting schema is incomplete.") }
     }
 
     static func copy(from source: URL, to destination: URL, overwrite: Bool = false) throws {

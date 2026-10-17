@@ -208,8 +208,8 @@ final class WorkspaceSnapshotTests: XCTestCase {
             try await database.archiveConversation(id: chat.id, now: Date.now.addingTimeInterval(-days * 86_400))
         }
         await model.loadArchive()
-        try renderView(ArchiveView(automaticallyLoad: false).environmentObject(model), name: "archive-dark", dark: true, destination: destination, size: NSSize(width: 640, height: 520))
-        try renderView(ArchiveView(automaticallyLoad: false).environmentObject(model), name: "archive-light", dark: false, destination: destination, size: NSSize(width: 640, height: 520))
+        try renderView(ArchiveView(automaticallyLoad: false).environmentObject(model), name: "archive-dark", dark: true, destination: destination, size: NSSize(width: 700, height: 620))
+        try renderView(ArchiveView(automaticallyLoad: false).environmentObject(model), name: "archive-light", dark: false, destination: destination, size: NSSize(width: 700, height: 620))
         try renderView(LongMessageView(text: (1...1_000).map { "Line \($0): A long message stays in a bounded, selectable native text viewport." }.joined(separator: "\n")), name: "expanded-long-message", dark: true, destination: destination, size: NSSize(width: 640, height: 360))
         model.settings.theme = .light; model.settings.accent = .mint
         try renderView(SettingsHub(model: model, settings: model.settings, page: .appearance), name: "settings-appearance", dark: false, destination: destination, size: NSSize(width: 940, height: 690))
