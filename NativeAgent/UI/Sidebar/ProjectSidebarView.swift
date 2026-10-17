@@ -148,27 +148,32 @@ struct ChatSidebarRow: View {
     let chat: Conversation
     @State private var hovering = false
     @State private var menuRequest = UUID()
+    @StateObject private var hoverRegion = SidebarHoverRegion()
 
     private var actions: [SidebarChatMenu.Item] { SidebarChatMenu.items(chat: chat, model: model) }
     var body: some View {
-        HStack(spacing: 0) {
-            Button {
-                if NSEvent.modifierFlags.contains(.option) { menuRequest = UUID() }
-                else { Task { await model.select(chat) } }
-            } label: {
-                HStack(spacing: 9) {
-                    Image(systemName: "bubble.left").frame(width: 18)
-                    Text(chat.title).lineLimit(1)
-                    Spacer(minLength: 0)
-                }.font(.system(size: 13)).foregroundStyle(model.selectedConversation?.id == chat.id ? Studio.accent : .secondary)
-                    .padding(.leading, 10).padding(.vertical, 9).contentShape(Rectangle())
-            }.buttonStyle(.plain).draggable(chat.id.uuidString)
-            SidebarChatMenu(items: actions, label: "Actions for \(chat.title)", rowHovered: hovering, request: menuRequest)
-                .frame(width: 28, height: 30).padding(.trailing, 4)
+        if model.renamingConversationID == chat.id {
+            ChatRenameEditor(chat: chat).environmentObject(model)
+        } else {
+            HStack(spacing: 0) {
+                Button {
+                    if NSEvent.modifierFlags.contains(.option) { menuRequest = UUID() }
+                    else { Task { await model.select(chat) } }
+                } label: {
+                    HStack(spacing: 9) {
+                        Image(systemName: "bubble.left").frame(width: 18)
+                        ScrollingChatTitle(title: chat.title)
+                    }.font(.system(size: 13)).foregroundStyle(model.selectedConversation?.id == chat.id ? Studio.accent : .secondary)
+                        .padding(.leading, 10).padding(.vertical, 9).contentShape(Rectangle())
+                }.buttonStyle(.plain).draggable(chat.id.uuidString)
+                SidebarChatMenu(items: actions, label: "Actions for \(chat.title)", rowHovered: hovering, request: menuRequest, hoverRegion: hoverRegion)
+                    .frame(width: 28, height: 30).padding(.trailing, 4)
+            }
+            .background(model.selectedConversation?.id == chat.id ? Studio.accent.opacity(0.12) : hovering ? Studio.hover : .clear, in: RoundedRectangle(cornerRadius: 7))
+            .background(SidebarHoverRegionView(region: hoverRegion))
+            .onHover { hovering = $0 }
+            .contextMenu { SidebarChatMenuContent(items: actions) }
         }
-        .background(model.selectedConversation?.id == chat.id ? Studio.accent.opacity(0.12) : hovering ? Studio.hover : .clear, in: RoundedRectangle(cornerRadius: 7))
-        .onHover { hovering = $0 }
-        .contextMenu { SidebarChatMenuContent(items: actions) }
     }
 }
 

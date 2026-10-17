@@ -30,6 +30,12 @@ final class WorkspaceSnapshotTests: XCTestCase {
         model.conversations = [Conversation(groupID: root.id, title: "Plan the redesign"), Conversation(groupID: child.id, title: "Build the navigation"), Conversation(groupID: nested.id, title: "Button variants"), Conversation(title: "A new idea"), Conversation(title: "Explore Swift concurrency")]
         model.selectedGroupID = root.id
         try render(model, name: "groups-dark", dark: true, destination: destination)
+        let longChat = Conversation(title: "Improve sidebar hover menus and conversation titles without losing the original chat")
+        model.conversations.append(longChat)
+        try render(model, name: "long-chat-title", dark: true, destination: destination)
+        model.renameConversation(longChat)
+        try render(model, name: "inline-chat-rename", dark: true, destination: destination)
+        model.renamingConversationID = nil
         try render(model, name: "groups-small", dark: false, destination: destination, size: NSSize(width: 900, height: 620))
         model.selectedConversation = model.conversations.first
         model.timeline = [

@@ -296,6 +296,49 @@ final class ChatGPTBrowserTests: XCTestCase {
         }
     }
 
+    func testTitleRequestUsesIsolatedTextResponseAndRejectsIncompleteOutput() async throws {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [ChatGPTFixtureProtocol.self]
+        let store = MemoryChatGPTCredentials()
+        var record = store.load()
+        record.activeClientID = "oaiapp_fixture"
+        record.registrations = [.init(clientID: "oaiapp_fixture", subject: "fixture", email: "fixture@example.invalid",
+            tokens: .init(accessToken: "fake-access", expiresAt: .now.addingTimeInterval(3600), scope: ChatGPTAuth.scope))]
+        store.save(record)
+        let provider = ChatGPTProvider(store: store, http: ChatGPTHTTP(session: URLSession(configuration: configuration)))
+        ChatGPTFixtureProtocol.prepare("data: {\"type\":\"response.completed\",\"response\":{\"output\":[{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"Sidebar interaction improvements\"}]}]}}\n\n")
+        try await provider.connect()
+        let unexpected = expectation(description: "Title generation must not write to the chat event stream")
+        unexpected.isInverted = true
+        let events = await provider.events
+        let observer = Task {
+            for await event in events {
+                switch event {
+                case .agentDelta, .agentMessage, .turnStarted, .turnCompleted, .approval: unexpected.fulfill()
+                default: break
+                }
+            }
+        }
+        let title = try await provider.titleCompletion(instructions: "Name the chat", input: "Transcript", model: "fixture")
+        XCTAssertEqual(title, "Sidebar interaction improvements")
+        let request = try XCTUnwrap(ChatGPTFixtureProtocol.requests.last { $0.url?.path == "/v1/responses" })
+        let body = try JSONDecoder().decode(JSONValue.self, from: XCTUnwrap(request.httpBody))
+        XCTAssertEqual(body["store"], .bool(false)); XCTAssertEqual(body["stream"], .bool(true))
+        XCTAssertNil(body["tools"]); XCTAssertNil(body["previous_response_id"])
+        XCTAssertEqual(body["model"], .string("fixture"))
+        for frame in ["data: {\"type\":\"response.output_text.delta\",\"delta\":\"Partial title\"}\n\n",
+                      "data: {\"type\":\"response.incomplete\"}\n\n"] {
+            ChatGPTFixtureProtocol.prepare(frame)
+            do {
+                _ = try await provider.titleCompletion(instructions: "Name", input: "Transcript", model: "fixture")
+                XCTFail("Partial output must not become a suggestion")
+            } catch { }
+        }
+        await fulfillment(of: [unexpected], timeout: 0.1)
+        observer.cancel()
+        await provider.disconnect()
+    }
+
     func testNativeToolLoopRequiresApprovalAndPreservesStatelessHistory() async throws {
         for decision in [ApprovalDecision.accept, .decline, .cancel] {
             let call: JSONValue = .object(["type": .string("function_call"), "id": .string("fc_fixture"), "call_id": .string("call_fixture"),

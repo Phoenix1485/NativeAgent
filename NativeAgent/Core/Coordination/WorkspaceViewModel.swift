@@ -54,6 +54,7 @@ final class WorkspaceViewModel: ObservableObject {
     @Published var searchResults: [Conversation] = []
     @Published var searchHasMore = false
     @Published var searchLoading = false
+    @Published var renamingConversationID: UUID?
     @Published var libraryHasMore: Set<String> = []
     @Published var hasOlderMessages = false
     @Published var hasNewerMessages = false
@@ -425,25 +426,32 @@ final class WorkspaceViewModel: ObservableObject {
     }
 
     func renameConversation(_ conversation: Conversation) {
-        let alert = NSAlert()
-        alert.messageText = "Rename chat"
-        let input = NSTextField(string: conversation.title)
-        input.frame = NSRect(x: 0, y: 0, width: 300, height: 26)
-        alert.accessoryView = input
-        alert.addButton(withTitle: "Save")
-        alert.addButton(withTitle: "Cancel")
-        alert.window.initialFirstResponder = input
-        guard alert.runModal() == .alertFirstButtonReturn else { return }
-        let title = input.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !title.isEmpty else { return }
-        Task {
-            var renamed = conversation
-            renamed.title = title
-            do {
-                try await database.save(conversation: renamed)
-                upsertChat(renamed)
-                if selectedConversation?.id == renamed.id { selectedConversation = renamed }
-            } catch { show(error) }
+        renamingConversationID = conversation.id
+    }
+
+    func saveConversationTitle(_ id: UUID, title: String) async throws {
+        let title = try ChatTitleService.cleanTitle(title)
+        // Update only the title so a stale row cannot revert a move, archive or thread ID.
+        let renamed = try await database.renameConversation(id: id, title: title)
+        upsertChat(renamed)
+        if let index = searchResults.firstIndex(where: { $0.id == id }) { searchResults[index].title = title }
+        if selectedConversation?.id == id { selectedConversation?.title = title }
+    }
+
+    var titleSuggestionUnavailableReason: String? {
+        guard directChatGPT, provider is ChatGPTProvider else { return "Connect ChatGPT to suggest a name with AI." }
+        guard case .ready = connectionStatus, !accountActionInProgress else { return "Connect ChatGPT to suggest a name with AI." }
+        guard !isWorking else { return "Wait for the current reply to finish." }
+        guard let selectedModelID, availableModels.contains(where: { $0.id == selectedModelID }) else { return "Choose a ChatGPT model first." }
+        return nil
+    }
+
+    func suggestConversationTitle(_ conversation: Conversation) async throws -> String {
+        if let reason = titleSuggestionUnavailableReason { throw NativeAgentError.unsupported(reason) }
+        guard let titleProvider = provider as? ChatGPTProvider, let model = selectedModelID else { throw NativeAgentError.unsupported("Connect ChatGPT first.") }
+        await persistenceTask?.value
+        return try await ChatTitleService.suggest(database: database, conversationID: conversation.id) { instructions, input in
+            try await titleProvider.titleCompletion(instructions: instructions, input: input, model: model)
         }
     }
 

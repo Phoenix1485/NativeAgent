@@ -196,6 +196,58 @@ actor ChatGPTProvider: CodingProvider {
         }
     }
     func startThread(projectPath: String, model: String?) throws -> String { "chatgpt-direct/" + UUID().uuidString }
+    /// An isolated text request: no chat events, thread mutation, or tool execution.
+    func titleCompletion(instructions: String, input: String, model: String) async throws -> String {
+        guard authenticated else { throw ChatGPTAuth.failure("Connect your ChatGPT account first.") }
+        let operation = generation
+        let registration = try await validRegistration()
+        try Task.checkCancellation()
+        guard generation == operation else { throw CancellationError() }
+        var request = URLRequest(url: URL(string: ChatGPTAuth.resource + "/responses")!)
+        request.httpMethod = "POST"
+        request.timeoutInterval = 90
+        request.setValue("Bearer " + registration.tokens!.accessToken, forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
+        request.httpBody = try JSONEncoder().encode(JSONValue.object([
+            "model": .string(model), "instructions": .string(instructions),
+            "input": .array([.object(["role": .string("user"), "content": .string(input)])]),
+            "store": .bool(false), "stream": .bool(true)
+        ]))
+        do {
+            let (bytes, response) = try await http.session.bytes(for: request)
+            let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+            guard status == 200 else { throw ChatGPTHTTPError(status: status) }
+            var framer = ChatGPTEventFramer()
+            for try await byte in bytes {
+                try Task.checkCancellation()
+                guard generation == operation else { throw CancellationError() }
+                if let frame = try framer.push(byte), let result = try Self.titleResult(frame) { return result }
+            }
+            if let frame = try framer.finish(), let result = try Self.titleResult(frame) { return result }
+            throw ChatGPTAuth.failure("The name suggestion was interrupted. Try again.")
+        } catch is CancellationError { throw CancellationError() }
+        catch { throw ChatGPTAuth.failure(Self.safeMessage(error)) }
+    }
+
+    private static func titleResult(_ frame: String) throws -> String? {
+        let event = try JSONDecoder().decode(JSONValue.self, from: Data(frame.utf8))
+        switch event["type"]?.stringValue {
+        case "response.completed":
+            let output = event["response"]?["output"]?.arrayValue ?? []
+            let text = output.filter { $0["type"]?.stringValue == "message" }
+                .flatMap { $0["content"]?.arrayValue ?? [] }
+                .filter { $0["type"]?.stringValue == "output_text" }
+                .compactMap { $0["text"]?.stringValue }.joined()
+            guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, text.count <= 8_000 else {
+                throw ChatGPTAuth.failure("AI did not return a usable name suggestion. Try again or enter a name.")
+            }
+            return text
+        case "response.failed", "response.incomplete", "error":
+            throw ChatGPTAuth.failure("AI could not finish the name suggestion. Try again or enter a name.")
+        default: return nil
+        }
+    }
     func resumeThread(id: String, projectPath: String) throws { /* Context is explicitly resent by WorkspaceViewModel. */ }
     func startTurn(threadID: String, prompt: String, projectPath: String, model: String?) throws {
         guard authenticated else { throw ChatGPTAuth.failure("Connect your ChatGPT account first.") }

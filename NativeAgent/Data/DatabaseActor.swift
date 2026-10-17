@@ -244,6 +244,27 @@ actor DatabaseActor {
         }.reversed()
     }
 
+    func renameConversation(id: UUID, title: String) throws -> Conversation {
+        try ensureInitialized()
+        guard let existing = try conversation(id: id), existing.archivedAt == nil else {
+            throw NativeAgentError.unsupported("This chat is no longer available to rename.")
+        }
+        try execute("UPDATE conversations SET title=? WHERE id=?", [.text(title), .text(id.uuidString)])
+        var renamed = existing; renamed.title = title
+        return renamed
+    }
+
+    /// Full message text, oldest first. Used independently of the UI's preview window.
+    func titleMessages(conversationID: UUID, after: Int, through: Int) throws -> [TimelineEntry] {
+        try ensureInitialized()
+        return try query("SELECT kind,display_text,received_order FROM timeline_items WHERE conversation_id=? AND kind IN ('userMessage','agentMessage') AND is_streaming=0 AND received_order>? AND received_order<=? ORDER BY received_order LIMIT 40",
+                         [.text(conversationID.uuidString), .int(after), .int(through)]) { row in
+            var entry = TimelineEntry(kind: TimelineKind(rawValue: row.text(0))!, title: "", text: row.text(1))
+            entry.receivedOrder = row.int(2)
+            return entry
+        }
+    }
+
     func fullTimelineText(id: UUID) throws -> String? {
         try ensureInitialized()
         return try query("SELECT display_text FROM timeline_items WHERE id=?", [.text(id.uuidString)]) { $0.text(0) }.first

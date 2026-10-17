@@ -4,6 +4,49 @@ import XCTest
 
 @MainActor
 final class SidebarChatMenuTests: XCTestCase {
+    func testRealPopoverClosesAfterLeavingAndCanReopen() async throws {
+        _ = NSApplication.shared
+        let window = NSWindow(contentRect: NSRect(x: 300, y: 300, width: 240, height: 50), styleMask: [.titled], backing: .buffered, defer: false)
+        let row = NSView(frame: NSRect(x: 0, y: 0, width: 240, height: 50))
+        let region = SidebarHoverRegion(); region.view = row
+        let button = SidebarChatMenu.HoverMenuButton()
+        button.frame = NSRect(x: 205, y: 10, width: 28, height: 30)
+        button.hoverRegion = region
+        button.items = [.init(id: "rename", title: "Rename…", action: {})]
+        row.addSubview(button); window.contentView = row
+        window.orderFront(nil)
+        defer { button.closeMenu(); window.orderOut(nil) }
+        button.showMenu()
+        XCTAssertTrue(button.menuVisible)
+        let frame = try XCTUnwrap(region.screenFrame)
+        button.pointerMoved(to: NSPoint(x: frame.midX, y: frame.midY))
+        try await Task.sleep(for: .milliseconds(180))
+        XCTAssertTrue(button.menuVisible)
+        button.pointerMoved(to: NSPoint(x: -10_000, y: -10_000))
+        try await Task.sleep(for: .milliseconds(180))
+        XCTAssertFalse(button.menuVisible)
+        button.showMenu()
+        XCTAssertTrue(button.menuVisible)
+    }
+
+    func testPopupHoverScopeExcludesOtherChatsButIncludesItsOwnActions() {
+        let row = NSRect(x: 20, y: 100, width: 220, height: 36)
+        let popup = NSRect(x: 244, y: 20, width: 205, height: 116)
+        XCTAssertTrue(SidebarChatMenu.HoverMenuButton.containsPointer(NSPoint(x: 50, y: 118), row: row, popup: popup))
+        XCTAssertTrue(SidebarChatMenu.HoverMenuButton.containsPointer(NSPoint(x: 300, y: 55), row: row, popup: popup))
+        XCTAssertFalse(SidebarChatMenu.HoverMenuButton.containsPointer(NSPoint(x: 50, y: 150), row: row, popup: popup))
+        XCTAssertFalse(SidebarChatMenu.HoverMenuButton.containsPointer(NSPoint(x: 50, y: 80), row: row, popup: popup))
+    }
+
+    func testRowHoverOnlyRevealsDotsAndNeverPresentsPopup() {
+        let button = SidebarChatMenu.HoverMenuButton()
+        var presented = false
+        button.presentMenu = { _, _, _ in presented = true }
+        button.rowHovered = true; button.refreshAppearance()
+        XCTAssertFalse(presented)
+        XCTAssertFalse(button.menuVisible)
+    }
+
     func testHoverClickAndKeyboardOpenTheSameMenuWithoutSelectingChat() throws {
         _ = NSApplication.shared
         let button = SidebarChatMenu.HoverMenuButton()
