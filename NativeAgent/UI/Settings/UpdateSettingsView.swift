@@ -33,11 +33,11 @@ struct WhatsNewView: View {
     @EnvironmentObject private var updater: AppUpdater
     @Environment(\.dismiss) private var dismiss
     private let highlights = [
-        ("Your API connections", "Add up to ten API tokens in Settings → API connections, securely stored in Keychain. Use OpenAI, Claude, Grok, DeepSeek or compatible custom endpoints."),
-        ("Quick actions with @", "Type @ or use the composer’s @ button to attach files, choose plan mode, open templates or select your AIs."),
-        ("Multiple AIs, one chat", "Ask selected AIs for independent, labeled answers using recent chat context. Review destinations before sending; API usage is billed separately."),
-        ("Controlled parallel replies", "At most two requests run at once. Stop cancels pending work, and one provider’s error does not discard other answers."),
-        ("Official account sign-in", "Grok account connections use its official runtime. Claude subscription conversations stay in official Claude Code; use a Claude API key for shared-chat replies.")
+        ("Code you can see", "File previews now display code correctly. Open a larger Files tab with a resizable file list on the right, and switch back to your chat whenever you need it."),
+        ("Find the right file", "Search filenames and paths, filter by file type, and use Find or ⌘F to search within the open file."),
+        ("Your archive, easier to browse", "Archived chats use your selected accent color. Search chat titles, filter by archive date, and load more results as needed."),
+        ("Delete when you choose", "Permanently delete an individual archived chat after confirmation, including its saved messages, draft and attachment copies. Original files and provider histories stay separate."),
+        ("Keep large archives manageable", "Chats normally remain recoverable for 30 days. When more than 30 chats are archived, chats containing at least 10 MiB of stored content can be deleted after 20 days, oldest first, until 30 remain.")
     ]
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
