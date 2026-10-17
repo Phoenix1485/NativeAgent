@@ -60,9 +60,13 @@ struct KeychainCredentialStore: CredentialStoring {
 enum ProviderExecutable {
     static func resolve(_ kind: ProviderKind, configured: String) -> String? {
         if !configured.isEmpty { return configured }
-        return (["/opt/homebrew/bin", "/usr/local/bin", NSHomeDirectory() + "/.local/bin"] + (kind == .grok ? [NSHomeDirectory() + "/.grok/bin"] : []) +
-                (ProcessInfo.processInfo.environment["PATH"] ?? "").split(separator: ":").map(String.init).filter { $0.hasPrefix("/") })
-            .map { $0 + "/" + kind.executable }.first { FileManager.default.isExecutableFile(atPath: $0) }
+        var directories = ["/opt/homebrew/bin", "/usr/local/bin", NSHomeDirectory() + "/.local/bin"]
+        if kind == .grok { directories.append(NSHomeDirectory() + "/.grok/bin") }
+        let searchPath = ProcessInfo.processInfo.environment["PATH"] ?? ""
+        let inheritedDirectories = searchPath.split(separator: ":").map { String($0) }.filter { $0.hasPrefix("/") }
+        directories.append(contentsOf: inheritedDirectories)
+        return directories.map { $0 + "/" + kind.executable }
+            .first { FileManager.default.isExecutableFile(atPath: $0) }
     }
     static let credentialVariables = ["OPENAI_API_KEY", "CODEX_API_KEY", "CODEX_ACCESS_TOKEN", "OPENAI_BASE_URL",
         "OPENAI_ORG_ID", "OPENAI_ORGANIZATION", "OPENAI_PROJECT_ID", "CODEX_MODEL_PROVIDER",
