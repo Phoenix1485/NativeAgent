@@ -201,6 +201,38 @@ final class CodeTextViewTests: XCTestCase {
         XCTAssertEqual(restoredText.selectedRange(), NSRange(location: 15, length: 12))
     }
 
+    func testWrappingReflowsWhenLegacyVerticalScrollbarAppearsAndDisappears() async throws {
+        let source = "let value = true\n" + String(repeating: "print(value); ", count: 100)
+        let window = makeWindow(CodeTextView(text: source))
+        defer { window.orderOut(nil) }
+        await settle(window)
+        let hosting = try XCTUnwrap(window.contentView as? NSHostingView<CodeTextView>)
+        let scroll = try XCTUnwrap(find(NSScrollView.self, in: hosting))
+        let text = try XCTUnwrap(scroll.documentView as? NSTextView)
+        scroll.scrollerStyle = .legacy
+        await settle(window)
+        XCTAssertTrue(try XCTUnwrap(scroll.verticalScroller).isHidden)
+        let initialWidth = viewportSize(scroll).width
+
+        hosting.rootView = CodeTextView(text: source, fontSize: 18, wrapsLines: true)
+        await settle(window)
+        XCTAssertFalse(try XCTUnwrap(scroll.verticalScroller).isHidden)
+        XCTAssertLessThan(viewportSize(scroll).width, initialWidth, "Legacy scrollbars must actually consume viewport width in this regression.")
+        XCTAssertEqual(text.frame.width, viewportSize(scroll).width, accuracy: 1)
+        XCTAssertEqual(try XCTUnwrap(text.textContainer).containerSize.width + 2 * text.textContainerInset.width,
+                       viewportSize(scroll).width, accuracy: 1)
+        let widthWithVerticalScroller = viewportSize(scroll).width
+
+        hosting.rootView = CodeTextView(text: "let short = true", fontSize: 18, wrapsLines: true)
+        await settle(window)
+        XCTAssertTrue(try XCTUnwrap(scroll.verticalScroller).isHidden)
+        XCTAssertGreaterThan(viewportSize(scroll).width, widthWithVerticalScroller,
+                             "Hiding the legacy vertical scrollbar must return its viewport space.")
+        XCTAssertEqual(text.frame.width, viewportSize(scroll).width, accuracy: 1)
+        XCTAssertEqual(try XCTUnwrap(text.textContainer).containerSize.width + 2 * text.textContainerInset.width,
+                       viewportSize(scroll).width, accuracy: 1)
+    }
+
     func testEnablingWrapAfterHorizontalScrollKeepsFirstColumnVisible() async throws {
         let source = Array(repeating: "let value = \"" + String(repeating: "long source ", count: 60) + "\"", count: 100).joined(separator: "\n")
         let window = makeWindow(CodeTextView(text: source))

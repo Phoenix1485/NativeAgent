@@ -167,6 +167,8 @@ private final class CodeScrollView: NSScrollView {
     private var pendingOrigin: NSPoint?
     private var documentState: CodeDocumentState?
     private var boundsObserver: NSObjectProtocol?
+    private var observedViewportSize: NSSize?
+    private var viewportLayoutScheduled = false
     var wrapsLines = false
 
     deinit { if let boundsObserver { NotificationCenter.default.removeObserver(boundsObserver) } }
@@ -174,14 +176,46 @@ private final class CodeScrollView: NSScrollView {
     func trackDocument(_ state: CodeDocumentState?) {
         documentState = state
         guard boundsObserver == nil else { return }
+        observedViewportSize = viewportSize
         contentView.postsBoundsChangedNotifications = true
-        boundsObserver = NotificationCenter.default.addObserver(forName: NSView.boundsDidChangeNotification, object: contentView, queue: .main) { [weak self] _ in self?.saveViewport() }
+        boundsObserver = NotificationCenter.default.addObserver(forName: NSView.boundsDidChangeNotification, object: contentView, queue: .main) { [weak self] _ in self?.clipBoundsDidChange() }
+    }
+
+    private var viewportSize: NSSize {
+        let insets = contentView.contentInsets
+        return NSSize(width: max(0, contentView.bounds.width - insets.left - insets.right),
+                      height: max(0, contentView.bounds.height - insets.top - insets.bottom))
+    }
+
+    private func clipBoundsDidChange() {
+        saveViewport()
+        let viewport = viewportSize
+        guard observedViewportSize != viewport else { return }
+        observedViewportSize = viewport
+        guard !viewportLayoutScheduled else { return }
+        viewportLayoutScheduled = true
+        // A legacy scrollbar can appear after document sizing, taking another
+        // 15 points from the clip view. Reflow after AppKit finishes tiling;
+        // ordinary scrolling changes only the origin and does not schedule work.
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.viewportLayoutScheduled = false
+            self.sizeDocumentToFit()
+            self.needsLayout = true
+        }
     }
 
     func saveViewport() {
         guard !pendingScrollRestore, contentView.bounds.width > 80, contentView.bounds.height > 40 else { return }
         documentState?.scrollOrigin = contentView.bounds.origin
         if let textView = documentView as? NSTextView { documentState?.selection = textView.selectedRange() }
+    }
+
+    override func tile() {
+        super.tile()
+        // Scroller tiling can change contentInsets without changing the clip
+        // view's bounds, so bounds notifications alone miss that adjustment.
+        clipBoundsDidChange()
     }
 
     override func layout() {
@@ -209,9 +243,10 @@ private final class CodeScrollView: NSScrollView {
               let layout = textView.layoutManager, let container = textView.textContainer else { return }
         sizingDocument = true
         defer { sizingDocument = false }
-        let insets = contentView.contentInsets
-        let viewport = NSSize(width: max(0, contentView.bounds.width - insets.left - insets.right),
-                              height: max(0, contentView.bounds.height - insets.top - insets.bottom))
+        let viewport = viewportSize
+        // Hidden tabs can temporarily have no viewport. Keep their existing
+        // layout until visible rather than wrapping a large file at one point.
+        guard viewport.width > 0, viewport.height > 0 else { return }
         let width = wrapsLines ? max(1, viewport.width - 2 * textView.textContainerInset.width) : CGFloat.greatestFiniteMagnitude
         if container.containerSize.width != width {
             container.containerSize = NSSize(width: width, height: CGFloat.greatestFiniteMagnitude)
