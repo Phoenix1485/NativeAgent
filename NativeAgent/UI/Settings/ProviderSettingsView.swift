@@ -2,14 +2,15 @@ import AppKit
 import SwiftUI
 
 enum SettingsPage: String, CaseIterable, Identifiable {
-    case accounts = "Accounts", apiConnections = "API connections", github = "GitHub", models = "Models", plugins = "Plugins", configuration = "Configuration", storage = "Storage", appearance = "Appearance", updates = "Updates"
+    case accounts = "Accounts", apiConnections = "API connections", github = "GitHub", models = "Models", usage = "Usage", plugins = "Plugins", configuration = "Configuration", storage = "Storage", appearance = "Appearance", updates = "Updates"
     var id: String { rawValue }
-    var icon: String { switch self { case .accounts: "person.crop.circle"; case .apiConnections: "key.horizontal"; case .github: "point.3.connected.trianglepath.dotted"; case .models: "sparkles"; case .plugins: "puzzlepiece.extension"; case .configuration: "slider.horizontal.3"; case .storage: "externaldrive"; case .appearance: "paintpalette"; case .updates: "arrow.triangle.2.circlepath" } }
+    var icon: String { switch self { case .accounts: "person.crop.circle"; case .apiConnections: "key.horizontal"; case .github: "point.3.connected.trianglepath.dotted"; case .models: "sparkles"; case .usage: "chart.bar.xaxis"; case .plugins: "puzzlepiece.extension"; case .configuration: "slider.horizontal.3"; case .storage: "externaldrive"; case .appearance: "paintpalette"; case .updates: "arrow.triangle.2.circlepath" } }
     var subtitle: String { switch self {
     case .accounts: "Your accounts. Your choice of intelligence."
     case .apiConnections: "Up to ten API tokens. One shared conversation."
     case .github: "Connect GitHub and manage your repositories."
     case .models: "Keep the models you love. Hide the rest."
+    case .usage: "Explore your local token history and provider-reported context."
     case .plugins: "Trusted tools and data sources through MCP."
     case .configuration: "Decide how your agent works."
     case .storage: "Review your library, backups and cached files."
@@ -63,6 +64,7 @@ struct SettingsHub: View {
                         case .apiConnections: AIConnectionsView()
                         case .github: GitHubAccountView(controller: model.github).task { await model.github.refreshAuth() }; Button("Open GitHub workspace") { model.features.execute(.github) }
                         case .models: models
+                        case .usage: UsageSettingsView(controller: model.usage, selectedConversation: model.selectedConversation, quotaWindows: model.usageWindows)
                         case .plugins: MCPSettingsView(manager: model.features.mcp)
                         case .configuration: configuration
                         case .storage: StorageManagerView(model: model).frame(height: 450)
@@ -105,12 +107,13 @@ struct SettingsHub: View {
                 Text(onboarding ? "Welcome home." : "Settings").font(.system(size: 14, weight: .medium))
                 Text(onboarding ? "A few choices. All yours." : "Everything, in one place.").font(.system(size: 11)).foregroundStyle(.secondary)
             }
-            VStack(spacing: 5) {
-                ForEach(SettingsPage.allCases) { item in
-                    Button { page = item } label: { SidebarRow(title: item.rawValue, icon: item.icon, selected: page == item) }.buttonStyle(.plain)
+            ScrollView {
+                VStack(spacing: 5) {
+                    ForEach(SettingsPage.allCases) { item in
+                        Button { page = item } label: { SidebarRow(title: item.rawValue, icon: item.icon, selected: page == item) }.buttonStyle(.plain)
+                    }
                 }
             }
-            Spacer()
             VStack(alignment: .leading, spacing: 8) {
                 Image(systemName: "lock.shield").font(.system(size: 18)).foregroundStyle(.secondary)
                 Text("Private by design").font(.system(size: 11, weight: .medium))

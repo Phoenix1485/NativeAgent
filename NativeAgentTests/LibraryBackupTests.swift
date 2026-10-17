@@ -24,7 +24,9 @@ final class LibraryBackupTests: XCTestCase {
         DROP INDEX features_conversation;
         DROP INDEX attachments_conversation;
         ALTER TABLE conversations DROP COLUMN stored_bytes;
-        DELETE FROM schema_migrations WHERE version=6;
+        DROP TABLE usage_records;
+        DROP TABLE usage_tracking;
+        DELETE FROM schema_migrations WHERE version>=6;
         """)
         try LibrarySnapshots.validate(backup)
         let target = directory.appendingPathComponent("restored.sqlite3")

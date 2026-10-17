@@ -52,14 +52,18 @@ final class APIChatClient: NSObject, URLSessionTaskDelegate, @unchecked Sendable
         return text
     }
 
-    func complete(connection: AIConnection, token: String, instructions: String, prompt: String) async throws -> String {
+    func complete(connection: AIConnection, token: String, instructions: String, prompt: String, usage: ProviderTokenUsageCallback? = nil) async throws -> String {
+        let request = try Self.request(connection: connection, token: token, instructions: instructions, prompt: prompt)
+        try Task.checkCancellation()
         let config = URLSessionConfiguration.ephemeral
         config.httpCookieStorage = nil; config.httpShouldSetCookies = false; config.urlCredentialStorage = nil; config.urlCache = nil
         config.timeoutIntervalForResource = 180
         let session = URLSession(configuration: config, delegate: self, delegateQueue: nil)
         defer { session.invalidateAndCancel() }
+        let requestID = UUID().uuidString
+        var reported = false
         do {
-            let (bytes, response) = try await session.bytes(for: Self.request(connection: connection, token: token, instructions: instructions, prompt: prompt))
+            let (bytes, response) = try await session.bytes(for: request)
             let status = (response as? HTTPURLResponse)?.statusCode ?? 0
             guard (200..<300).contains(status) else { return try Self.answer(data: Data(), status: status, format: connection.format) }
             var data = Data()
@@ -68,9 +72,15 @@ final class APIChatClient: NSObject, URLSessionTaskDelegate, @unchecked Sendable
                 guard data.count < 4_000_000 else { throw NativeAgentError.protocolError("API response exceeds the 4 MB limit.") }
                 data.append(byte)
             }
+            let payload = (try? JSONDecoder().decode(JSONValue.self, from: data)) ?? .null
+            await usage?(TokenUsageParser.api(payload, format: connection.format, requestID: requestID, model: connection.model))
+            reported = true
             return try Self.answer(data: data, status: status, format: connection.format)
-        } catch is CancellationError { throw CancellationError() }
-        catch let error as NativeAgentError { throw error }
-        catch { throw NativeAgentError.providerUnavailable("API connection failed. Check the endpoint and network. No automatic retry was made.") }
+        } catch {
+            if !reported { await usage?(.init(id: requestID, model: connection.model)) }
+            if error is CancellationError { throw CancellationError() }
+            if let error = error as? NativeAgentError { throw error }
+            throw NativeAgentError.providerUnavailable("API connection failed. Check the endpoint and network. No automatic retry was made.")
+        }
     }
 }

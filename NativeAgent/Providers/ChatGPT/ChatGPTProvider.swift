@@ -208,10 +208,10 @@ actor ChatGPTProvider: CodingProvider {
     }
     func startThread(projectPath: String, model: String?) throws -> String { "chatgpt-direct/" + UUID().uuidString }
     /// An isolated text request: no chat events, thread mutation, or tool execution.
-    func titleCompletion(instructions: String, input: String, model: String) async throws -> String {
-        try await textCompletion(instructions: instructions, input: input, model: model, maximumCharacters: 8_000)
+    func titleCompletion(instructions: String, input: String, model: String, usage: ProviderTokenUsageCallback? = nil) async throws -> String {
+        try await textCompletion(instructions: instructions, input: input, model: model, maximumCharacters: 8_000, usage: usage)
     }
-    func textCompletion(instructions: String, input: String, model: String, maximumCharacters: Int = 100_000) async throws -> String {
+    func textCompletion(instructions: String, input: String, model: String, maximumCharacters: Int = 100_000, usage: ProviderTokenUsageCallback? = nil) async throws -> String {
         guard authenticated else { throw ChatGPTAuth.failure("Connect your ChatGPT account first.") }
         let operation = generation
         let registration = try await validRegistration()
@@ -228,6 +228,7 @@ actor ChatGPTProvider: CodingProvider {
             "input": .array([.object(["role": .string("user"), "content": .string(input)])]),
             "store": .bool(false), "stream": .bool(true)
         ]))
+        var usageTracker = ResponseUsageTracker(model: model)
         do {
             let (bytes, response) = try await http.session.bytes(for: request)
             let status = (response as? HTTPURLResponse)?.statusCode ?? 0
@@ -236,12 +237,21 @@ actor ChatGPTProvider: CodingProvider {
             for try await byte in bytes {
                 try Task.checkCancellation()
                 guard generation == operation else { throw CancellationError() }
-                if let frame = try framer.push(byte), let result = try Self.textResult(frame, maximumCharacters: maximumCharacters) { return result }
+                if let frame = try framer.push(byte) {
+                    if let report = try usageTracker.consume(frame) { await usage?(report) }
+                    if let result = try Self.textResult(frame, maximumCharacters: maximumCharacters) { return result }
+                }
             }
-            if let frame = try framer.finish(), let result = try Self.textResult(frame, maximumCharacters: maximumCharacters) { return result }
+            if let frame = try framer.finish() {
+                if let report = try usageTracker.consume(frame) { await usage?(report) }
+                if let result = try Self.textResult(frame, maximumCharacters: maximumCharacters) { return result }
+            }
             throw ChatGPTAuth.failure("The text response was interrupted. No automatic retry was made.")
-        } catch is CancellationError { throw CancellationError() }
-        catch { throw ChatGPTAuth.failure(Self.safeMessage(error)) }
+        } catch {
+            if let report = usageTracker.finish() { await usage?(report) }
+            if error is CancellationError { throw CancellationError() }
+            throw ChatGPTAuth.failure(Self.safeMessage(error))
+        }
     }
 
     private static func textResult(_ frame: String, maximumCharacters: Int) throws -> String? {
@@ -273,10 +283,12 @@ actor ChatGPTProvider: CodingProvider {
             catalog.first(where: { $0.id == model })?.reasoningEfforts.contains(effort) == true ? effort : nil
         }
         continuation.yield(.turnStarted(id))
-        turnTask = Task { await stream(id: id, prompt: prompt, model: model, reasoning: reasoning, instructions: instructions, operation: operation, tools: tools, media: media) }
+        turnTask = Task { await stream(id: id, threadID: threadID, prompt: prompt, model: model, reasoning: reasoning, instructions: instructions, operation: operation, tools: tools, media: media) }
     }
-    private func stream(id: String, prompt: String, model: String, reasoning: String?, instructions: String, operation: UUID, tools: [NativeTool], media: [JSONValue]) async {
+    private func stream(id: String, threadID: String, prompt: String, model: String, reasoning: String?, instructions: String, operation: UUID, tools: [NativeTool], media: [JSONValue]) async {
         defer { if generation == operation { turnTask = nil; currentTurnID = nil } }
+        var usageTracker = ResponseUsageTracker(turnID: id, threadID: threadID, model: model)
+        var requestStarted = false
         do {
             let content: JSONValue = media.isEmpty ? .string(prompt) : .array([.object(["type": .string("input_text"), "text": .string(prompt)])] + media)
             var input: [JSONValue] = [.object(["role": .string("user"), "content": content])]
@@ -301,6 +313,8 @@ actor ChatGPTProvider: CodingProvider {
                 }
                 request.httpBody = try JSONEncoder().encode(body)
                 guard (request.httpBody?.count ?? 0) <= 33_554_432 else { throw ChatGPTAuth.failure("Request context exceeded 32 MiB. Start a new request with fewer attachments.") }
+                usageTracker = ResponseUsageTracker(turnID: id, threadID: threadID, model: model)
+                requestStarted = true
                 let (bytes, response) = try await http.session.bytes(for: request)
                 let status = (response as? HTTPURLResponse)?.statusCode ?? 0
                 guard status == 200 else { throw ChatGPTHTTPError(status: status) }
@@ -309,10 +323,11 @@ actor ChatGPTProvider: CodingProvider {
                 for try await byte in bytes {
                     try Task.checkCancellation()
                     guard generation == operation else { throw CancellationError() }
-                    if let frame = try framer.push(byte), let completed = try handleFrame(frame, turnID: id) { output = completed; break }
+                    if let frame = try framer.push(byte), let completed = try handleFrame(frame, turnID: id, usage: &usageTracker) { output = completed; break }
                 }
-                if output == nil, let frame = try framer.finish() { output = try handleFrame(frame, turnID: id) }
+                if output == nil, let frame = try framer.finish() { output = try handleFrame(frame, turnID: id, usage: &usageTracker) }
                 guard let output else { throw ChatGPTAuth.failure("The ChatGPT stream ended without completion. Partial output was preserved; nothing was automatically retried.") }
+                requestStarted = false
                 let calls = output.filter { $0["type"]?.stringValue == "function_call" }
                 if calls.isEmpty { continuation.yield(.turnCompleted(turnID: id, status: .completed, error: nil)); return }
                 guard calls.count <= 16 else { throw ChatGPTAuth.failure("Too many tool calls in one response.") }
@@ -331,6 +346,7 @@ actor ChatGPTProvider: CodingProvider {
             throw ChatGPTAuth.failure("Stopped after eight tool rounds. Review the results before continuing.")
         } catch {
             guard generation == operation else { return }
+            if requestStarted, let report = usageTracker.finish() { continuation.yield(.tokenUsage(report)) }
             let canceled = Task.isCancelled || error is CancellationError
             if let error = error as? ChatGPTHTTPError {
                 if error.status == 429 { continuation.yield(.usageLimitReached) }
@@ -339,7 +355,8 @@ actor ChatGPTProvider: CodingProvider {
             continuation.yield(.turnCompleted(turnID: id, status: canceled ? .interrupted : .failed, error: canceled ? nil : Self.safeMessage(error)))
         }
     }
-    private func handleFrame(_ frame: String, turnID: String) throws -> [JSONValue]? {
+    private func handleFrame(_ frame: String, turnID: String, usage: inout ResponseUsageTracker) throws -> [JSONValue]? {
+        if let report = try usage.consume(frame) { continuation.yield(.tokenUsage(report)) }
         guard let data = frame.data(using: .utf8), let event = try JSONSerialization.jsonObject(with: data) as? [String: Any],
               let type = event["type"] as? String else { throw ChatGPTAuth.failure("ChatGPT returned an invalid stream event.") }
         switch type {

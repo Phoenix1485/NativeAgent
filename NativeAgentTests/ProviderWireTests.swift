@@ -63,13 +63,25 @@ final class ProviderWireTests: XCTestCase {
         let consume = Task { await client.consume(fixture.input) }
         let provider = GrokProvider(path: "/never-launched", rpcClient: client)
         let events = await provider.events
-        let completion = Task { for await event in events { if case .turnCompleted = event { return true } }; return false }
+        let usageReports = TokenReportRecorder()
+        let completion = Task {
+            for await event in events {
+                if case .tokenUsage(let report) = event { await usageReports.append(report) }
+                if case .turnCompleted = event { return true }
+            }
+            return false
+        }
         let session = try await provider.startThread(projectPath: "/test", model: nil)
         let models = await provider.loadModels()
         XCTAssertEqual(models.map(\.id), ["grok-test"])
         try await provider.startTurn(threadID: session, prompt: "Hello", projectPath: "/test", model: "grok-test")
         let completed = await completion.value
         XCTAssertTrue(completed)
+        let reports = await usageReports.reports
+        XCTAssertEqual(reports.count, 1)
+        XCTAssertNil(reports.first?.tokens, "An ACP completion without consumption counters must be unavailable, not zero")
+        XCTAssertEqual(reports.first?.threadID, "grok-session")
+        XCTAssertEqual(reports.first?.model, "grok-test")
         let requests = await fixture.snapshot()
         XCTAssertTrue(requests.allSatisfy { $0["jsonrpc"] == .string("2.0") })
         XCTAssertEqual(requests[1]["method"], .string("session/set_config_option"))

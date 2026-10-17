@@ -32,11 +32,12 @@ enum AIReviewRunner {
         }
     }
 
-    static func grok(path: String, model: String, prompt: String, folder: String) async throws -> String {
-        try await runtime(GrokProvider(path: path), model: model, prompt: prompt, folder: folder)
+    static func grok(path: String, model: String, prompt: String, folder: String, usage: ProviderTokenUsageCallback? = nil) async throws -> String {
+        try await runtime(GrokProvider(path: path), model: model, prompt: prompt, folder: folder, usage: usage)
     }
 
-    static func runtime(_ provider: any CodingProvider, model: String, prompt: String, folder: String, timeout: Duration = .seconds(180)) async throws -> String {
+    static func runtime(_ provider: any CodingProvider, model: String, prompt: String, folder: String, timeout: Duration = .seconds(180), usage: ProviderTokenUsageCallback? = nil) async throws -> String {
+        let usageCapture = RuntimeReviewUsageCapture(model: model, callback: usage)
         return try await withTaskCancellationHandler {
             do {
                 let answer = try await withThrowingTaskGroup(of: String.self) { group in
@@ -51,10 +52,12 @@ enum AIReviewRunner {
                                 await provider.configure(.init(access: .readOnly, instructions: "Review and answer the question. Do not edit files or run commands."))
                                 let thread = try await provider.startThread(projectPath: folder, model: model)
                                 try await provider.startTurn(threadID: thread, prompt: prompt, projectPath: folder, model: model)
+                                await usageCapture.started(threadID: thread)
                             case .agentDelta(_, let delta):
                                 guard text.count + delta.count <= 100_000 else { throw NativeAgentError.unsupported("Grok answer exceeded the review limit.") }
                                 text += delta
                             case .approval(let request): try await provider.answerApproval(id: request.id, decision: .cancel)
+                            case .tokenUsage(let report): await usageCapture.receive(report)
                             case .authenticationRequired, .authenticationFailed:
                                 throw NativeAgentError.unsupported("Reconnect your Grok account in Settings → Accounts.")
                             case .turnCompleted(_, let status, _):
@@ -69,8 +72,26 @@ enum AIReviewRunner {
                     defer { group.cancelAll() }
                     return try await group.next()!
                 }
+                await usageCapture.finish()
                 await provider.disconnect(); return answer
-            } catch { await provider.disconnect(); throw error }
+            } catch { await usageCapture.finish(); await provider.disconnect(); throw error }
         } onCancel: { Task { await provider.disconnect() } }
+    }
+}
+
+/// An interrupted runtime may close its stream before its final usage event.
+/// Only a successfully started prompt can produce an unavailable-usage record.
+private actor RuntimeReviewUsageCapture {
+    private let model: String
+    private let callback: ProviderTokenUsageCallback?
+    private var pending: ProviderTokenUsage?
+    private var reported = false
+    init(model: String, callback: ProviderTokenUsageCallback?) { self.model = model; self.callback = callback }
+    func started(threadID: String) { pending = .init(id: UUID().uuidString, threadID: threadID, model: model) }
+    func receive(_ report: ProviderTokenUsage) async { reported = true; await callback?(report) }
+    func finish() async {
+        guard !reported, let pending else { return }
+        reported = true
+        await callback?(pending)
     }
 }

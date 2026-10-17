@@ -76,7 +76,7 @@ final class AuthenticationTests: XCTestCase {
         let wire = AuthWire()
         let rpc = RPCClient { try await wire.write($0) }
         let consume = Task { await rpc.consume(wire.input) }
-        let provider = CodexProvider(rpcClient: rpc)
+        let provider = CodexProvider(binaryPath: "/never-launched", rpcClient: rpc)
         try await provider.beginLogin()
         await provider.handle(.init(method: "account/login/completed", params: .object(["loginId": .string("stale-login"), "success": .bool(true)])))
         var requests = await wire.snapshot()
@@ -95,7 +95,7 @@ final class AuthenticationTests: XCTestCase {
         let wire = AuthWire()
         let rpc = RPCClient { try await wire.write($0) }
         let consume = Task { await rpc.consume(wire.input) }
-        let provider = CodexProvider(rpcClient: rpc)
+        let provider = CodexProvider(binaryPath: "/never-launched", rpcClient: rpc)
         try await provider.beginLogin()
         await provider.cancelLogin()
         await provider.handle(.init(method: "account/login/completed", params: .object(["loginId": .string("current-login"), "success": .bool(true)])))
@@ -109,7 +109,7 @@ final class AuthenticationTests: XCTestCase {
     func testApprovalResponsesRespectExactAdvertisedChoicesAndCannotReplay() async throws {
         let wire = AuthWire()
         let rpc = RPCClient { try await wire.write($0) }
-        let provider = CodexProvider(rpcClient: rpc)
+        let provider = CodexProvider(binaryPath: "/never-launched", rpcClient: rpc)
         await provider.handle(RPCServerRequest(id: .string("permission"), method: "item/commandExecution/requestApproval",
             params: .object(["availableDecisions": .array([.string("decline")])])) )
         do { try await provider.answerApproval(id: "s:permission", decision: .accept); XCTFail("Accepted an unavailable choice") } catch {}
@@ -126,7 +126,7 @@ final class AuthenticationTests: XCTestCase {
         let wire = AuthWire()
         let rpc = RPCClient { try await wire.write($0) }
         let consume = Task { await rpc.consume(wire.input) }
-        let provider = CodexProvider(rpcClient: rpc, loginTimeout: .milliseconds(20))
+        let provider = CodexProvider(binaryPath: "/never-launched", rpcClient: rpc, loginTimeout: .milliseconds(20))
         let events = await provider.events
         let timedOut = expectation(description: "Recoverable browser timeout")
         let observer = Task {
@@ -146,7 +146,7 @@ final class AuthenticationTests: XCTestCase {
         await wire.setAccount(.object(["type": .string("apiKey")]))
         let rpc = RPCClient { try await wire.write($0) }
         let consume = Task { await rpc.consume(wire.input) }
-        let provider = CodexProvider(rpcClient: rpc)
+        let provider = CodexProvider(binaryPath: "/never-launched", rpcClient: rpc)
         let events = await provider.events
         let rejected = expectation(description: "Mismatched account rejected")
         let observer = Task {
@@ -186,7 +186,7 @@ final class AuthenticationTests: XCTestCase {
     func testQuestionAnswersRequireVerifiedSchemaAdvertisedChoicesAndCannotReplay() async throws {
         let schema = try JSONDecoder().decode(JSONValue.self, from: Data(#"{"type":"object","required":["answers"],"properties":{"answers":{"type":"object","additionalProperties":{"type":"object","required":["answers"],"properties":{"answers":{"type":"array","items":{"type":"string"}}}}}}}"#.utf8))
         let wire = AuthWire(), rpc = RPCClient { try await wire.write($0) }
-        let provider = CodexProvider(rpcClient: rpc, questionResponseSchema: schema)
+        let provider = CodexProvider(binaryPath: "/never-launched", rpcClient: rpc, questionResponseSchema: schema)
         let params = try JSONDecoder().decode(JSONValue.self, from: Data(#"{"turnId":"t","questions":[{"id":"q","question":"Choose?","header":"Choice","isOther":false,"options":[{"label":"Safe option","description":"Do this"}]}]}"#.utf8))
         await provider.handle(RPCServerRequest(id: .string("input"), method: "item/tool/requestUserInput", params: params))
         do { try await provider.answerQuestion(id: "s:input", answers: ["q": "Not advertised"]); XCTFail("Accepted unsupported choice") } catch { }
@@ -196,7 +196,7 @@ final class AuthenticationTests: XCTestCase {
         XCTAssertEqual(frames.count, 1)
         XCTAssertEqual(frames.first?["result"]?["answers"]?["q"]?["answers"], .array([.string("Safe option")]))
         XCTAssertNil(CodexProvider.parseQuestions(.object(["questions": .array([])])))
-        let unverified = CodexProvider(rpcClient: rpc)
+        let unverified = CodexProvider(binaryPath: "/never-launched", rpcClient: rpc)
         await unverified.handle(RPCServerRequest(id: .string("unknown"), method: "item/tool/requestUserInput", params: params))
         let denied = await wire.snapshot()
         XCTAssertNotNil(denied.last?["error"])

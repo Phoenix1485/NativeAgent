@@ -33,7 +33,7 @@ final class WorkspaceAIAssistant: ObservableObject {
         guard request.prompt.utf8.count <= 180_000 else { notice = "This content exceeds 180 KB. Select a smaller comparison."; return }
         do {
             guard model.authorizeAIReview(recipients, projectPath: request.projectPath) else { return }
-            let jobs = try model.makeAIReviewJobs(recipients: recipients, instructions: AIAssistanceRequest.instructions, input: request.prompt, projectPath: request.projectPath)
+            let jobs = try model.makeAIReviewJobs(recipients: recipients, instructions: AIAssistanceRequest.instructions, input: request.prompt, projectPath: request.projectPath, activity: request.purpose.rawValue, conversationID: model.selectedConversation?.id)
             let token = UUID(); generation = token
             answers = recipients.map { .init(id: $0.id, name: $0.name, model: $0.model) }
             notice = nil; isRunning = true

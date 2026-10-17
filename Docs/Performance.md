@@ -31,6 +31,9 @@ Date: 2026-10-11
 | Archive purge transaction | At most 100 chats per maintenance batch |
 | Large archived chat retention | 20 days for at least 10 MiB stored content while more than 30 unexpired archived chats remain; otherwise 30 days |
 | Archive size lookup | Persisted per-chat byte counter; listing/search does not read message or attachment bodies |
+| Usage history | 25 rows/page, at most 500 visible; CSV streams 500 rows/page |
+| Usage summaries | SQL aggregation; at most 3,660 daily points and 100 entries per breakdown; totals cover the full query |
+| Usage refresh | Coalesced while Settings → Usage is visible; no background dashboard reads |
 | Retained diagnostic messages | 100 |
 | Active P0 provider processes | 1 |
 | Explicit context | 24 items / 1 MiB copied text total |

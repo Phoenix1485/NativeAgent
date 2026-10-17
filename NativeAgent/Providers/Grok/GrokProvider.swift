@@ -16,6 +16,9 @@ actor GrokProvider: CodingProvider {
     private var availableModels: [ProviderModel] = []
     private var permissions: [String: (JSONValue, [ApprovalDecision: String])] = [:]
     private var turnTask: Task<Void, Never>?
+    private var usageTurnID: String?
+    private var usageModel: String?
+    private var contextUsage: ProviderTokenUsage?
     private var canLoad = false
     private var modes: [JSONValue] = []
     private var planModeApplied = false
@@ -65,6 +68,7 @@ actor GrokProvider: CodingProvider {
         tasks.forEach { $0.cancel() }; tasks = []
         await rpc?.close(); rpc = nil; await transport.stop(); await command.cancel(); sessionID = nil
         permissions = [:]
+        usageTurnID = nil; usageModel = nil; contextUsage = nil
     }
     func beginLogin() async throws {
         await disconnect(); apiKey = nil
@@ -124,14 +128,21 @@ actor GrokProvider: CodingProvider {
             planModeApplied = false
         }
         let turnID = UUID().uuidString
+        usageTurnID = turnID
+        usageModel = model == "__provider_default__" ? availableModels.first(where: \.isDefault)?.id : model
+        contextUsage = nil
         continuation.yield(.turnStarted(turnID))
         let text = configuration.instructions.isEmpty ? prompt : "User preferences for this turn:\n\(configuration.instructions)\n\nTask:\n\(prompt)"
         turnTask = Task {
             do {
                 let result = try await client.request(method: "session/prompt", params: .object(["sessionId": .string(threadID), "prompt": .array([.object(["type": .string("text"), "text": .string(text)])])]), timeout: .seconds(3600))
                 let reason = result["stopReason"]?.stringValue
+                finishUsage(threadID: threadID, turnID: turnID)
                 continuation.yield(.turnCompleted(turnID: turnID, status: reason == "cancelled" ? .interrupted : .completed, error: nil))
-            } catch { continuation.yield(.turnCompleted(turnID: turnID, status: .failed, error: "Grok could not finish this turn. Check the runtime, account access, and selected model.")) }
+            } catch {
+                finishUsage(threadID: threadID, turnID: turnID)
+                continuation.yield(.turnCompleted(turnID: turnID, status: .failed, error: "Grok could not finish this turn. Check the runtime, account access, and selected model."))
+            }
             turnTask = nil
         }
     }
@@ -168,14 +179,24 @@ actor GrokProvider: CodingProvider {
         permissions[id] = (request.id, choices)
         continuation.yield(.approval(.init(id: id, turnID: nil, method: request.method, title: params["toolCall"]?["title"]?.stringValue ?? "Allow Grok tool?", command: nil, workingDirectory: nil, choices: ApprovalDecision.allCases.filter { $0 == .cancel || choices[$0] != nil })))
     }
-    private func handle(_ notification: RPCNotification) {
+    func handle(_ notification: RPCNotification) {
         guard notification.method == "session/update", let update = notification.params?["update"] else { return }
         switch update["sessionUpdate"]?.stringValue {
+        case "usage_update":
+            guard let threadID = notification.params?["sessionId"]?.stringValue, threadID == sessionID, let turnID = usageTurnID else { return }
+            let report = TokenUsageParser.acpContext(update, threadID: threadID, turnID: turnID, model: usageModel)
+            contextUsage = report; continuation.yield(.tokenUsage(report))
         case "agent_message_chunk": if let text = update["content"]?["text"]?.stringValue { continuation.yield(.agentDelta(turnID: nil, text: text)) }
         case "config_option_update": readSession(update)
         case "tool_call": continuation.yield(.command(turnID: nil, title: update["title"]?.stringValue ?? "Grok tool", output: "", exitCode: nil))
         default: break
         }
+    }
+    private func finishUsage(threadID: String, turnID: String) {
+        guard usageTurnID == turnID else { return }
+        continuation.yield(.tokenUsage(contextUsage ?? .init(id: "grok/" + threadID + "/" + turnID,
+            turnID: turnID, threadID: threadID, model: usageModel)))
+        usageTurnID = nil; contextUsage = nil
     }
     private func readSession(_ result: JSONValue) {
         if let options = result["configOptions"]?.arrayValue { configOptions = options }

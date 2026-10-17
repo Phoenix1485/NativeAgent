@@ -465,7 +465,7 @@ actor DatabaseActor {
 
     private func migrateLibrary() throws {
         let version = try query("SELECT MAX(version) FROM schema_migrations") { $0.int(0) }.first ?? 0
-        guard version <= 6 else { throw NativeAgentError.unsupported("This library was created by a newer NativeAgent version.") }
+        guard version <= 7 else { throw NativeAgentError.unsupported("This library was created by a newer NativeAgent version.") }
         guard version < 2 else { return }
         // SQLite's backup API includes committed WAL pages, unlike copying the .sqlite file.
         var backupDB: OpaquePointer?
@@ -668,7 +668,191 @@ actor DatabaseActor {
             } catch { try? execute("ROLLBACK"); throw error }
         }
         if version < 6 { try migrateArchiveStorage() }
+        if version < 7 { try migrateUsage() }
         initialized = true
+    }
+
+    private func migrateUsage() throws {
+        try execute("BEGIN IMMEDIATE")
+        do {
+            // Usage is accounting history, independent of the chat/archive lifecycle.
+            // No conversation FK and no message text, credentials or request payloads.
+            try execute("""
+            CREATE TABLE usage_records(
+                id TEXT PRIMARY KEY,recorded_at REAL NOT NULL,provider TEXT NOT NULL,model TEXT NOT NULL,
+                source TEXT NOT NULL,activity TEXT NOT NULL,conversation_id TEXT,
+                input_tokens INTEGER,output_tokens INTEGER,cached_input_tokens INTEGER,
+                cache_write_input_tokens INTEGER,reasoning_output_tokens INTEGER,context_tokens INTEGER,context_limit INTEGER,
+                CHECK((input_tokens IS NULL AND output_tokens IS NULL) OR
+                    (input_tokens IS NOT NULL AND output_tokens IS NOT NULL AND input_tokens>=0 AND output_tokens>=0
+                     AND input_tokens<=1000000000000 AND output_tokens<=1000000000000
+                     AND input_tokens+output_tokens<=1000000000000)),
+                CHECK(cached_input_tokens IS NULL OR (input_tokens IS NOT NULL AND cached_input_tokens BETWEEN 0 AND input_tokens)),
+                CHECK(cache_write_input_tokens IS NULL OR (input_tokens IS NOT NULL AND cache_write_input_tokens BETWEEN 0 AND input_tokens-COALESCE(cached_input_tokens,0))),
+                CHECK(reasoning_output_tokens IS NULL OR (output_tokens IS NOT NULL AND reasoning_output_tokens BETWEEN 0 AND output_tokens)),
+                CHECK(context_tokens IS NULL OR context_tokens BETWEEN 0 AND 1000000000000),
+                CHECK(context_limit IS NULL OR context_limit BETWEEN 1 AND 1000000000000)
+            )
+            """)
+            try execute("CREATE INDEX usage_date ON usage_records(recorded_at DESC,id DESC)")
+            try execute("CREATE INDEX usage_provider_date ON usage_records(provider,model,recorded_at DESC)")
+            try execute("CREATE INDEX usage_chat_date ON usage_records(conversation_id,recorded_at DESC) WHERE conversation_id IS NOT NULL")
+            try execute("CREATE TABLE usage_tracking(id INTEGER PRIMARY KEY CHECK(id=1),started_at REAL NOT NULL)")
+            let started = Date.now.timeIntervalSince1970
+            try execute("INSERT INTO usage_tracking(id,started_at) VALUES(1,?)", [.double(started)])
+            try execute("INSERT INTO schema_migrations(version,applied_at) VALUES(7,?)", [.double(started)])
+            try execute("COMMIT")
+        } catch { try? execute("ROLLBACK"); throw error }
+    }
+
+    /// Repeated final/cumulative reports replace one request, never add another request.
+    func recordUsage(_ record: UsageRecord) throws {
+        try ensureInitialized()
+        let maximum: Int64 = 1_000_000_000_000
+        guard !record.id.isEmpty, record.id.utf8.count <= 512,
+              !record.provider.isEmpty, record.provider.utf8.count <= 1024,
+              record.model.utf8.count <= 2048, !record.source.isEmpty, record.source.utf8.count <= 128,
+              !record.activity.isEmpty, record.activity.utf8.count <= 128,
+              ![record.id, record.provider, record.model, record.source, record.activity].contains(where: { $0.utf8.contains(0) }),
+              record.recordedAt.timeIntervalSince1970.isFinite,
+              (0...253_402_300_799).contains(record.recordedAt.timeIntervalSince1970),
+              record.contextTokens.map({ (0...maximum).contains($0) }) ?? true,
+              record.contextLimit.map({ (1...maximum).contains($0) }) ?? true else {
+            throw NativeAgentError.unsupported("The usage report contains invalid metadata or context counts.")
+        }
+        if let tokens = record.tokens {
+            guard (0...maximum).contains(tokens.inputTokens), (0...maximum).contains(tokens.outputTokens),
+                  tokens.inputTokens + tokens.outputTokens <= maximum else {
+                throw NativeAgentError.unsupported("The usage report contains invalid token counts.")
+            }
+        }
+        let tokens = record.tokens.map { UsageTokens(inputTokens: $0.inputTokens, outputTokens: $0.outputTokens,
+            cachedInputTokens: $0.cachedInputTokens, cacheWriteInputTokens: $0.cacheWriteInputTokens,
+            reasoningOutputTokens: $0.reasoningOutputTokens) }
+        func count(_ value: Int64?) -> Binding { value.map { .int(Int($0)) } ?? .null }
+        try execute("BEGIN IMMEDIATE")
+        do {
+            let identity = try query("SELECT provider,model,source,activity,conversation_id FROM usage_records WHERE id=?", [.text(record.id)]) {
+                ($0.text(0), $0.text(1), $0.text(2), $0.text(3), $0.optionalText(4))
+            }.first
+            if let identity {
+                guard identity.0 == record.provider, identity.2 == record.source,
+                      identity.3 == record.activity, identity.4 == record.conversationID?.uuidString else {
+                    throw NativeAgentError.unsupported("A usage report cannot change an existing request’s identity.")
+                }
+            }
+            try execute("""
+            INSERT INTO usage_records(id,recorded_at,provider,model,source,activity,conversation_id,
+                input_tokens,output_tokens,cached_input_tokens,cache_write_input_tokens,reasoning_output_tokens,context_tokens,context_limit)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET
+                input_tokens=COALESCE(excluded.input_tokens,usage_records.input_tokens),
+                output_tokens=COALESCE(excluded.output_tokens,usage_records.output_tokens),
+                cached_input_tokens=CASE WHEN excluded.input_tokens IS NULL THEN usage_records.cached_input_tokens ELSE excluded.cached_input_tokens END,
+                cache_write_input_tokens=CASE WHEN excluded.input_tokens IS NULL THEN usage_records.cache_write_input_tokens ELSE excluded.cache_write_input_tokens END,
+                reasoning_output_tokens=CASE WHEN excluded.output_tokens IS NULL THEN usage_records.reasoning_output_tokens ELSE excluded.reasoning_output_tokens END,
+                context_tokens=COALESCE(excluded.context_tokens,usage_records.context_tokens),
+                context_limit=COALESCE(excluded.context_limit,usage_records.context_limit)
+            """, [.text(record.id), .double(record.recordedAt.timeIntervalSince1970), .text(record.provider), .text(record.model),
+                  .text(record.source), .text(record.activity), record.conversationID.map { .text($0.uuidString) } ?? .null,
+                  count(tokens?.inputTokens), count(tokens?.outputTokens), count(tokens?.cachedInputTokens),
+                  count(tokens?.cacheWriteInputTokens), count(tokens?.reasoningOutputTokens), count(record.contextTokens), count(record.contextLimit)])
+            try execute("COMMIT")
+        } catch { try? execute("ROLLBACK"); throw error }
+    }
+
+    private func usagePredicate(_ request: UsageQuery) throws -> (String, [Binding]) {
+        var sql = "1=1", bindings: [Binding] = []
+        for date in [request.start, request.end].compactMap({ $0 }) {
+            guard date.timeIntervalSince1970.isFinite else { throw NativeAgentError.unsupported("Choose valid usage dates.") }
+        }
+        if let start = request.start, let end = request.end, start >= end {
+            throw NativeAgentError.unsupported("The usage end date must be after its start date.")
+        }
+        if let start = request.start { sql += " AND u.recorded_at>=?"; bindings.append(.double(start.timeIntervalSince1970)) }
+        if let end = request.end { sql += " AND u.recorded_at<?"; bindings.append(.double(end.timeIntervalSince1970)) }
+        if let provider = request.provider { sql += " AND u.provider=?"; bindings.append(.text(provider)) }
+        if let model = request.model { sql += " AND u.model=?"; bindings.append(.text(model)) }
+        if let chat = request.conversationID { sql += " AND u.conversation_id=?"; bindings.append(.text(chat.uuidString)) }
+        return (sql, bindings)
+    }
+
+    /// Bounded keyset pages are also the export primitive; never decode the entire ledger.
+    func usageRecords(query request: UsageQuery = .init(), after: UsageRecord? = nil, limit: Int = 100) throws -> [UsageRecord] {
+        try ensureInitialized()
+        var (predicate, bindings) = try usagePredicate(request)
+        if let after {
+            predicate += " AND (u.recorded_at<? OR (u.recorded_at=? AND u.id<?))"
+            bindings += [.double(after.recordedAt.timeIntervalSince1970), .double(after.recordedAt.timeIntervalSince1970), .text(after.id)]
+        }
+        bindings.append(.int(max(1, min(500, limit))))
+        return try query("""
+        SELECT u.id,u.recorded_at,u.provider,u.model,u.source,u.activity,u.conversation_id,u.input_tokens,u.output_tokens,
+            u.cached_input_tokens,u.cache_write_input_tokens,u.reasoning_output_tokens,u.context_tokens,u.context_limit
+        FROM usage_records u WHERE \(predicate) ORDER BY u.recorded_at DESC,u.id DESC LIMIT ?
+        """, bindings, map: usageRecord)
+    }
+
+    func latestUsageContext(conversationID: UUID) throws -> UsageRecord? {
+        try ensureInitialized()
+        return try query("""
+        SELECT id,recorded_at,provider,model,source,activity,conversation_id,input_tokens,output_tokens,
+            cached_input_tokens,cache_write_input_tokens,reasoning_output_tokens,context_tokens,context_limit
+        FROM usage_records WHERE conversation_id=? AND activity='Chat'
+            AND (context_tokens IS NOT NULL OR context_limit IS NOT NULL OR input_tokens IS NOT NULL)
+        ORDER BY recorded_at DESC,id DESC LIMIT 1
+        """, [.text(conversationID.uuidString)], map: usageRecord).first
+    }
+
+    private func usageRecord(_ row: Row) -> UsageRecord {
+        func optional(_ index: Int32) -> Int64? { row.optionalText(index).map { _ in Int64(row.int(index)) } }
+        let tokens = optional(7).map { UsageTokens(inputTokens: $0, outputTokens: Int64(row.int(8)),
+            cachedInputTokens: optional(9), cacheWriteInputTokens: optional(10), reasoningOutputTokens: optional(11)) }
+        return UsageRecord(id: row.text(0), recordedAt: Date(timeIntervalSince1970: row.double(1)),
+            provider: row.text(2), model: row.text(3), source: row.text(4), activity: row.text(5),
+            conversationID: row.optionalText(6).flatMap(UUID.init(uuidString:)), tokens: tokens,
+            contextTokens: optional(12), contextLimit: optional(13))
+    }
+
+    /// SQLite performs aggregation; only bounded daily/breakdown rows leave the database.
+    func usageSummary(query request: UsageQuery = .init()) throws -> UsageSummary {
+        try ensureInitialized()
+        let (predicate, bindings) = try usagePredicate(request)
+        let aggregateSQL = "COUNT(*),COUNT(u.input_tokens),COALESCE(SUM(u.input_tokens),0),COALESCE(SUM(u.output_tokens),0),SUM(u.cached_input_tokens),SUM(u.cache_write_input_tokens),SUM(u.reasoning_output_tokens)"
+        func aggregate(_ row: Row, offset: Int32 = 0) throws -> UsageAggregate {
+            let input = Int64(row.int(offset + 2)), output = Int64(row.int(offset + 3))
+            guard !input.addingReportingOverflow(output).overflow else { throw NativeAgentError.unsupported("The usage total exceeds the supported counting range.") }
+            func optional(_ index: Int32) -> Int64? { row.optionalText(index).map { _ in Int64(row.int(index)) } }
+            return UsageAggregate(tokens: UsageTokens(inputTokens: input, outputTokens: output,
+                cachedInputTokens: optional(offset + 4), cacheWriteInputTokens: optional(offset + 5),
+                reasoningOutputTokens: optional(offset + 6)), recordCount: row.int(offset), reportedCount: row.int(offset + 1))
+        }
+        try execute("BEGIN DEFERRED")
+        do {
+            var result = UsageSummary()
+            guard let started = try query("SELECT started_at FROM usage_tracking WHERE id=1", map: { Date(timeIntervalSince1970: $0.double(0)) }).first else {
+                throw NativeAgentError.unsupported("The usage tracking start date is missing.")
+            }
+            result.trackingStartedAt = started
+            result.totals = try query("SELECT \(aggregateSQL) FROM usage_records u WHERE \(predicate)", bindings) { try aggregate($0) }.first ?? UsageAggregate()
+            let days = try query("SELECT date(u.recorded_at,'unixepoch','localtime'),\(aggregateSQL) FROM usage_records u WHERE \(predicate) GROUP BY 1 ORDER BY 1 DESC LIMIT 3661", bindings) {
+                UsageDailyTotal(day: $0.text(0), aggregate: try aggregate($0, offset: 1))
+            }
+            result.dailyIsTruncated = days.count > 3660
+            result.daily = Array(days.prefix(3660).reversed())
+            func breakdown(_ fields: String, group: String, join: String = "") throws -> [UsageBreakdown] {
+                let rows = try query("SELECT \(fields),\(aggregateSQL) FROM usage_records u \(join) WHERE \(predicate) GROUP BY \(group) ORDER BY COALESCE(SUM(u.input_tokens),0)+COALESCE(SUM(u.output_tokens),0) DESC,1 LIMIT 101", bindings) {
+                    UsageBreakdown(id: $0.text(0), label: $0.text(1), provider: $0.optionalText(2), aggregate: try aggregate($0, offset: 3))
+                }
+                result.breakdownsAreTruncated = result.breakdownsAreTruncated || rows.count > 100
+                return Array(rows.prefix(100))
+            }
+            result.providers = try breakdown("u.provider,u.provider,u.provider", group: "u.provider")
+            result.models = try breakdown("length(u.provider)||':'||u.provider||':'||u.model,u.model,u.provider", group: "u.provider,u.model")
+            result.activities = try breakdown("u.activity,u.activity,NULL", group: "u.activity")
+            result.conversations = try breakdown("COALESCE(u.conversation_id,'unassigned'),CASE WHEN u.conversation_id IS NULL THEN 'Other activity' ELSE COALESCE(c.title,'Deleted chat') END,NULL", group: "u.conversation_id", join: "LEFT JOIN conversations c ON c.id=u.conversation_id")
+            try execute("COMMIT")
+            return result
+        } catch { try? execute("ROLLBACK"); throw error }
     }
 
     private func migrateArchiveStorage() throws {

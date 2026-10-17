@@ -12,7 +12,7 @@ enum LibrarySnapshots {
         guard sqlite3_open_v2(url.path, &db, SQLITE_OPEN_READONLY, nil) == SQLITE_OK else { sqlite3_close(db); throw failure("Could not open backup.") }
         defer { sqlite3_close(db) }
         guard try scalar(db, "PRAGMA quick_check") == "ok",
-              let version = Int(try scalar(db, "SELECT MAX(version) FROM schema_migrations")), (5...6).contains(version) else {
+              let version = Int(try scalar(db, "SELECT MAX(version) FROM schema_migrations")), (5...7).contains(version) else {
             throw failure("This is not a compatible, healthy NativeAgent backup.")
         }
         try validateSchemaObjects(db, version: version)
@@ -25,6 +25,33 @@ enum LibrarySnapshots {
             guard try scalar(db, "SELECT COALESCE(SUM(stored_bytes < 0),0) FROM conversations") == "0" else {
                 throw failure("The backup contains invalid chat storage sizes.")
             }
+        }
+        if version >= 7 {
+            guard try scalar(db, "SELECT COUNT(*) FROM usage_tracking WHERE id=1 AND started_at>=0 AND started_at<=253402300799") == "1",
+                  try scalar(db, "SELECT COUNT(*) FROM pragma_foreign_key_list('usage_records')") == "0",
+                  try scalar(db, """
+                  SELECT COUNT(*) FROM usage_records WHERE
+                    id IS NULL OR length(id)=0 OR length(CAST(id AS BLOB))>512 OR
+                    recorded_at IS NULL OR recorded_at<0 OR recorded_at>253402300799 OR
+                    provider IS NULL OR length(provider)=0 OR length(CAST(provider AS BLOB))>1024 OR
+                    model IS NULL OR length(CAST(model AS BLOB))>2048 OR
+                    source IS NULL OR length(source)=0 OR length(CAST(source AS BLOB))>128 OR
+                    activity IS NULL OR length(activity)=0 OR length(CAST(activity AS BLOB))>128 OR
+                    instr(id,char(0))>0 OR instr(provider,char(0))>0 OR instr(model,char(0))>0 OR instr(source,char(0))>0 OR instr(activity,char(0))>0 OR
+                    (conversation_id IS NOT NULL AND (typeof(conversation_id)!='text' OR length(CAST(conversation_id AS BLOB))!=36 OR
+                        substr(conversation_id,9,1)!='-' OR substr(conversation_id,14,1)!='-' OR
+                        substr(conversation_id,19,1)!='-' OR substr(conversation_id,24,1)!='-' OR
+                        length(replace(conversation_id,'-',''))!=32 OR replace(conversation_id,'-','') GLOB '*[^0-9A-Fa-f]*')) OR
+                    ((input_tokens IS NULL) != (output_tokens IS NULL)) OR
+                    (input_tokens IS NOT NULL AND (typeof(input_tokens)!='integer' OR input_tokens<0 OR input_tokens>1000000000000)) OR
+                    (output_tokens IS NOT NULL AND (typeof(output_tokens)!='integer' OR output_tokens<0 OR output_tokens>1000000000000)) OR
+                    input_tokens+output_tokens>1000000000000 OR
+                    (cached_input_tokens IS NOT NULL AND (input_tokens IS NULL OR typeof(cached_input_tokens)!='integer' OR cached_input_tokens<0 OR cached_input_tokens>input_tokens)) OR
+                    (cache_write_input_tokens IS NOT NULL AND (input_tokens IS NULL OR typeof(cache_write_input_tokens)!='integer' OR cache_write_input_tokens<0 OR cache_write_input_tokens>input_tokens-COALESCE(cached_input_tokens,0))) OR
+                    (reasoning_output_tokens IS NOT NULL AND (output_tokens IS NULL OR typeof(reasoning_output_tokens)!='integer' OR reasoning_output_tokens<0 OR reasoning_output_tokens>output_tokens)) OR
+                    (context_tokens IS NOT NULL AND (typeof(context_tokens)!='integer' OR context_tokens<0 OR context_tokens>1000000000000)) OR
+                    (context_limit IS NOT NULL AND (typeof(context_limit)!='integer' OR context_limit<1 OR context_limit>1000000000000))
+                  """) == "0" else { throw failure("The backup contains an invalid usage ledger.") }
         }
         guard try scalar(db, "PRAGMA foreign_key_check").isEmpty else { throw failure("The backup contains broken references.") }
     }

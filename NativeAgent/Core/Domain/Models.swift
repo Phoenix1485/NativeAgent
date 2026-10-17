@@ -187,6 +187,7 @@ enum ProviderEvent: Sendable {
     case inspection(ProviderInspection)
     case accountDetails(ProviderAccount)
     case usage([ProviderUsageWindow])
+    case tokenUsage(ProviderTokenUsage)
     case usageLimitReached
     case connectionFailed(String)
     case approvalResolved(String)

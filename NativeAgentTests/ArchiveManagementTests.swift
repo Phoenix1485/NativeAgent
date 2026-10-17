@@ -130,7 +130,9 @@ final class ArchiveManagementTests: XCTestCase {
         DROP INDEX features_conversation;
         DROP INDEX attachments_conversation;
         ALTER TABLE conversations DROP COLUMN stored_bytes;
-        DELETE FROM schema_migrations WHERE version=6;
+        DROP TABLE usage_records;
+        DROP TABLE usage_tracking;
+        DELETE FROM schema_migrations WHERE version>=6;
         """)
         database = try DatabaseActor(url: directory.appendingPathComponent("library.sqlite3"))
         let migrated = try await storedBytes(value.id)

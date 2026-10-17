@@ -12,6 +12,7 @@ actor CodexProvider: CodingProvider {
     private var eventContinuation: AsyncStream<ProviderEvent>.Continuation?
     private var currentThreadID: String?
     private var currentTurnID: String?
+    private var tokenUsage = CodexTurnUsageTracker()
     private var configuration = RunConfiguration()
     private var loginID: String?
     private var authenticationMethod: AuthenticationMethod
@@ -144,6 +145,7 @@ actor CodexProvider: CodingProvider {
         await transport.stop()
         currentThreadID = nil
         currentTurnID = nil
+        tokenUsage = CodexTurnUsageTracker()
     }
 
     func beginLogin() async throws {
@@ -271,18 +273,21 @@ actor CodexProvider: CodingProvider {
             throw NativeAgentError.protocolError("thread/start returned no thread id")
         }
         currentThreadID = id
+        tokenUsage.reset(threadID: id, newThread: true, response: result)
         emit(.threadCreated(id))
         return id
     }
 
     func resumeThread(id: String, projectPath: String) async throws {
-        _ = try await connectedClient().request(method: "thread/resume", params: .object([
+        tokenUsage.reset(threadID: id, newThread: false)
+        let result = try await connectedClient().request(method: "thread/resume", params: .object([
             "threadId": .string(id), "cwd": .string(projectPath),
             "modelProvider": .string("openai"),
             "approvalPolicy": .string("on-request"),
             "sandbox": .string(configuration.access == .readOnly ? "read-only" : "workspace-write")
         ]), timeout: .seconds(30))
         currentThreadID = id
+        tokenUsage.captureBaseline(result)
         emit(.threadCreated(id))
     }
 
@@ -290,6 +295,14 @@ actor CodexProvider: CodingProvider {
         try await validateSelectedAuthentication()
         if currentThreadID != threadID {
             try await resumeThread(id: threadID, projectPath: projectPath)
+        }
+        if tokenUsage.needsBaseline {
+            // Some versions include usage on read/resume; others replay it via
+            // notifications. Missing data leaves the first resumed turn unknown.
+            let state = try? await connectedClient().request(method: "thread/read", params: .object([
+                "threadId": .string(threadID), "includeTurns": .bool(false)
+            ]), timeout: .seconds(10))
+            tokenUsage.captureBaseline(state)
         }
         var params: [String: JSONValue] = [
             "threadId": .string(threadID),
@@ -302,9 +315,11 @@ actor CodexProvider: CodingProvider {
         params["sandboxPolicy"] = configuration.access == .readOnly
             ? .object(["type": .string("readOnly")])
             : .object(["type": .string("workspaceWrite"), "writableRoots": .array([.string(projectPath)]), "networkAccess": .bool(false)])
+        tokenUsage.prepare(model: model)
         let result = try await connectedClient().request(method: "turn/start", params: .object(params), timeout: .seconds(30))
         currentTurnID = Self.findString(keys: ["id"], in: result["turn"] ?? result)
         emit(.turnStarted(currentTurnID ?? UUID().uuidString))
+        if let currentTurnID { for report in tokenUsage.activate(turnID: currentTurnID) { emit(.tokenUsage(report)) } }
     }
 
     func answerApproval(id: String, decision: ApprovalDecision) async throws {
@@ -347,6 +362,8 @@ actor CodexProvider: CodingProvider {
         let params = notification.params ?? .object([:])
         let turnID = Self.findString(keys: ["turnId", "turn_id"], in: params) ?? currentTurnID
         switch notification.method {
+        case "thread/tokenUsage/updated":
+            if let report = tokenUsage.consume(params) { emit(.tokenUsage(report)) }
         case "turn/plan/updated":
             let steps = (params["plan"]?.arrayValue ?? []).compactMap { value -> String? in
                 guard let step = value["step"]?.stringValue, let status = value["status"]?.stringValue else { return nil }
@@ -385,6 +402,7 @@ actor CodexProvider: CodingProvider {
             let turn = params["turn"] ?? params
             let statusString = Self.findString(keys: ["status"], in: turn) ?? "failed"
             let status: TurnStatus = statusString == "completed" ? .completed : (statusString == "interrupted" ? .interrupted : .failed)
+            if let id = turn["id"]?.stringValue ?? turnID, let report = tokenUsage.finish(turnID: id) { emit(.tokenUsage(report)) }
             emit(.turnCompleted(turnID: turn["id"]?.stringValue ?? turnID, status: status, error: turn["error"]?["message"]?.stringValue))
             handleProviderError(turn["error"])
             currentTurnID = nil

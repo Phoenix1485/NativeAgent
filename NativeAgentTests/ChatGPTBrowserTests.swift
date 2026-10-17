@@ -441,6 +441,38 @@ final class ChatGPTBrowserTests: XCTestCase {
         await provider.disconnect()
     }
 
+    func testIsolatedUsageCallbackIncludesFailedResponseAndMissingCounters() async throws {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [ChatGPTFixtureProtocol.self]
+        let store = MemoryChatGPTCredentials()
+        var record = store.load(); record.activeClientID = "oaiapp_fixture"
+        record.registrations = [.init(clientID: "oaiapp_fixture", subject: "fixture", email: nil,
+            tokens: .init(accessToken: "fake-access", expiresAt: .now.addingTimeInterval(3600), scope: ChatGPTAuth.scope))]
+        store.save(record)
+        let provider = ChatGPTProvider(store: store, http: ChatGPTHTTP(session: URLSession(configuration: configuration)))
+        let reports = TokenReportRecorder()
+        try await provider.connect()
+        ChatGPTFixtureProtocol.prepare("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"title\",\"usage\":{\"input_tokens\":15,\"output_tokens\":3},\"output\":[{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"A title\"}]}]}}\n\n")
+        let title = try await provider.titleCompletion(instructions: "Name", input: "Input", model: "fixture", usage: { await reports.append($0) })
+        XCTAssertEqual(title, "A title")
+        for terminal in ["response.failed", "response.incomplete"] {
+            ChatGPTFixtureProtocol.prepare("data: {\"type\":\"\(terminal)\",\"response\":{\"id\":\"\(terminal)\",\"usage\":{\"input_tokens\":20,\"output_tokens\":2}}}\n\n")
+            do { _ = try await provider.textCompletion(instructions: "Review", input: "Input", model: "fixture", usage: { await reports.append($0) }); XCTFail("Expected incomplete response") }
+            catch { }
+        }
+        for _ in 0..<2 {
+            ChatGPTFixtureProtocol.prepare("data: {\"type\":\"response.output_text.delta\",\"delta\":\"Partial\"}\n\n")
+            do { _ = try await provider.textCompletion(instructions: "Review", input: "Input", model: "fixture", usage: { await reports.append($0) }); XCTFail("Expected interrupted response") }
+            catch { }
+        }
+        let captured = await reports.reports
+        XCTAssertEqual(captured.count, 5)
+        XCTAssertEqual(captured.prefix(3).map { $0.tokens?.totalTokens }, [18, 22, 22])
+        XCTAssertTrue(captured.suffix(2).allSatisfy { $0.tokens == nil })
+        XCTAssertNotEqual(captured[3].id, captured[4].id)
+        await provider.disconnect()
+    }
+
     @MainActor
     func testAIRenameFromViewModelUsesTargetChatAndFiveMessageMinimum() async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
@@ -484,9 +516,9 @@ final class ChatGPTBrowserTests: XCTestCase {
         for decision in [ApprovalDecision.accept, .decline, .cancel] {
             let call: JSONValue = .object(["type": .string("function_call"), "id": .string("fc_fixture"), "call_id": .string("call_fixture"),
                 "namespace": .string("nativeagent"), "name": .string("fixture_tool"), "arguments": .string("{\"text\":\"hello\"}")])
-            let first: JSONValue = .object(["type": .string("response.completed"), "response": .object(["output": .array([call])])])
+            let first: JSONValue = .object(["type": .string("response.completed"), "response": .object(["id": .string("tool-call"), "usage": .object(["input_tokens": .number(10), "output_tokens": .number(2)]), "output": .array([call])])])
             let frame = "data: " + String(decoding: try JSONEncoder().encode(first), as: UTF8.self) + "\n\n"
-            ChatGPTFixtureProtocol.prepareStreams([frame, "data: {\"type\":\"response.completed\",\"response\":{\"output\":[]}}\n\n"])
+            ChatGPTFixtureProtocol.prepareStreams([frame, "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"tool-followup\",\"usage\":{\"input_tokens\":20,\"output_tokens\":3},\"output\":[]}}\n\n"])
             let configuration = URLSessionConfiguration.ephemeral; configuration.protocolClasses = [ChatGPTFixtureProtocol.self]
             let store = MemoryChatGPTCredentials()
             var record = store.load(); record.activeClientID = "oaiapp_fixture"
@@ -499,9 +531,11 @@ final class ChatGPTBrowserTests: XCTestCase {
                 PreparedNativeTool(title: "Fixture", review: "Review exact fixture arguments") { await counter.run() }
             }])
             let completed = expectation(description: "Tool loop \(decision)")
+            let usageReports = TokenReportRecorder()
             let events = await provider.events
             let consumer = Task { () -> TurnStatus? in
                 for await event in events {
+                    if case .tokenUsage(let report) = event { await usageReports.append(report) }
                     if case .approval(let request) = event {
                         let before = await counter.count; XCTAssertEqual(before, 0)
                         XCTAssertEqual(request.choices, [.accept, .decline, .cancel])
@@ -521,6 +555,15 @@ final class ChatGPTBrowserTests: XCTestCase {
             XCTAssertEqual(count, decision == .accept ? 1 : 0)
             let requests = ChatGPTFixtureProtocol.requests.filter { $0.url?.path == "/v1/responses" }
             XCTAssertEqual(requests.count, decision == .cancel ? 1 : 2)
+            let reports = await usageReports.reports
+            XCTAssertEqual(reports.count, requests.count)
+            XCTAssertEqual(reports.first?.tokens?.totalTokens, 12)
+            XCTAssertTrue(reports.allSatisfy { $0.threadID == "fixture" })
+            if requests.count == 2 {
+                XCTAssertEqual(reports.last?.tokens?.totalTokens, 23)
+                XCTAssertNotEqual(reports.first?.id, reports.last?.id)
+                XCTAssertEqual(reports.first?.turnID, reports.last?.turnID)
+            }
             let body = try JSONDecoder().decode(JSONValue.self, from: XCTUnwrap(requests.first?.httpBody))
             XCTAssertEqual(body["tools"]?.arrayValue?.first?["type"], .string("namespace"))
             XCTAssertEqual(body["tools"]?.arrayValue?.first?["name"], .string("nativeagent"))
