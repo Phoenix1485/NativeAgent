@@ -48,9 +48,14 @@ struct NativeAgentApp: App {
                     Button(command.title) { container.viewModel.features.execute(command) }.disabled(!container.viewModel.features.canExecute(command))
                 }
                 Divider()
-                Button("Send") { Task { await container.viewModel.send() } }
+                Button(container.viewModel.isWorking ? "Queue follow-up" : "Send") {
+                    Task {
+                        if container.viewModel.isWorking { await container.viewModel.features.enqueueFollowUp() }
+                        else { await container.viewModel.send() }
+                    }
+                }
                     .keyboardShortcut(.return, modifiers: .command)
-                    .disabled(!container.viewModel.canSend)
+                    .disabled(container.viewModel.isWorking ? !container.viewModel.features.canQueueFollowUp : !container.viewModel.canSend)
                 Button("Stop") { Task { await container.viewModel.stop() } }
                     .keyboardShortcut(".", modifiers: .command)
             }

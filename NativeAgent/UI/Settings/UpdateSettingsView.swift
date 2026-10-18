@@ -33,6 +33,7 @@ struct WhatsNewView: View {
     @EnvironmentObject private var updater: AppUpdater
     @Environment(\.dismiss) private var dismiss
     private let highlights = [
+        ("Follow the work in chat", "Compact activity rows reveal commands, plans and agent updates. Review the latest task’s tracked file changes and snapshot line counts above the composer. Queue follow-ups in the same chat, edit or remove them, choose what runs next, and pause or resume execution."),
         ("Organized chat actions", "Chat menus now group Markdown and PDF under Export, with dividers separating Rename and Pin, Export, Archive chat, and Move to."),
         ("New chat works where you expect", "New chat and ⌘N open a blank composer in the requested location. Existing drafts and attachments stay saved, group chats no longer block standalone chats, and New chat returns from Files to the main AI conversation."),
         ("CLI and model update checks", "Check Claude and Grok versions at startup and at :00 and :30 each hour. Refresh the connected ChatGPT model catalog, see installed/latest CLI versions, or check manually in Settings → Updates."),

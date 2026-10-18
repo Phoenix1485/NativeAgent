@@ -78,6 +78,8 @@ actor TaskFileService {
         return .init(files: changed, warnings: baseline.warnings)
     }
 
+    func summarize(_ checkpoint: TaskCheckpoint) -> TaskChangeSummary { TaskChangeSummary.measure(checkpoint.files) }
+
     func rollback(_ file: FileCheckpoint, root: String) throws {
         guard !file.rolledBack, let expected = file.afterHash, file.after != nil else { throw NativeAgentError.unsupported("There is no verified applied-file baseline for rollback. Review manually.") }
         let url = try safeURL(root: root, path: file.path)

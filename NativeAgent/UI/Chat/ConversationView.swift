@@ -279,6 +279,13 @@ struct ConversationView: View {
     }
 
     private var composer: some View {
+        VStack(spacing: 8) {
+            ChatWorkStatusView(features: model.features)
+            composerInput
+        }
+    }
+
+    private var composerInput: some View {
         VStack(alignment: .leading, spacing: 0) {
             ScrollView(.horizontal) {
             HStack(spacing: 12) {
@@ -290,7 +297,7 @@ struct ConversationView: View {
                 Button("Plugins") { showPlugins = true }
                 Button("Templates") { model.features.execute(.templates) }
                 Button("Context (\(model.features.context.count))") { model.features.execute(.context) }
-                Button("Queue draft") { Task { await model.features.enqueueDraft() } }.disabled(model.draft.isEmpty || !model.providerCapabilities.structuredStreaming)
+                Button("Queue follow-up") { Task { await model.features.enqueueFollowUp() } }.disabled(!model.features.canQueueFollowUp)
                 Spacer()
                 if model.features.profile != nil { Button("Profile / overrides") { model.features.execute(.context) } }
             }.font(.caption).buttonStyle(.plain).foregroundStyle(.secondary).fixedSize(horizontal: true, vertical: false)
@@ -373,6 +380,11 @@ struct ConversationView: View {
                 if !model.usesRecipientChat { ChatModelPicker() }
                 else { Button("\(model.selectedRequestRecipients.count) selected ▾") { showComposerActions.toggle() }.font(.caption).disabled(model.isWorking) }
                 if model.isWorking {
+                    Button { Task { await model.features.enqueueFollowUp() } } label: {
+                        Image(systemName: "text.badge.plus").frame(width: 31, height: 31)
+                    }.buttonStyle(.plain).foregroundStyle(Studio.accent)
+                        .disabled(!model.features.canQueueFollowUp).help("Queue this prompt after the current turn")
+                        .accessibilityLabel("Queue follow-up")
                     Button { Task { await model.stop() } } label: { Image(systemName: "stop.fill").frame(width: 31, height: 31) }.buttonStyle(.plain).foregroundStyle(Studio.accent).help("Stop turn")
                 } else {
                     Text("⌘ ↵").font(.system(size: 11)).foregroundStyle(.tertiary)

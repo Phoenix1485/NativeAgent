@@ -1010,6 +1010,13 @@ actor DatabaseActor {
         }
     }
 
+    func latestTaskReport(conversationID: UUID) throws -> TaskReport? {
+        try ensureInitialized()
+        return try query("SELECT payload FROM feature_records WHERE kind='report' AND conversation_id=? ORDER BY json_extract(payload,'$.startedAt') DESC,id DESC LIMIT 1", [.text(conversationID.uuidString)]) {
+            try JSONDecoder().decode(TaskReport.self, from: Data($0.text(0).utf8))
+        }.first
+    }
+
     /// Listing reports never decodes their command output or checkpoint contents.
     func reportSummaries(projectID: UUID?, offset: Int = 0) throws -> [TaskReport] {
         try ensureInitialized()

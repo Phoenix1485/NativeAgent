@@ -6,6 +6,42 @@ import XCTest
 /// Opt-in renders of the actual SwiftUI view with a temporary, offline library.
 final class WorkspaceSnapshotTests: XCTestCase {
     @MainActor
+    func testRenderChatActivityAndFollowUps() async throws {
+        guard let destination = ProcessInfo.processInfo.environment["NATIVEAGENT_SNAPSHOT_DIR"] else { throw XCTSkip("Opt-in UI render") }
+        _ = NSApplication.shared
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let suite = "ChatWorkSnapshots.\(UUID())"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let database = try DatabaseActor(url: directory.appendingPathComponent("preview.sqlite3"))
+        let model = WorkspaceViewModel(provider: SettingsTestProvider(), database: database, files: FileService(), git: GitService(), automaticallyRestore: false, preferences: defaults, credentials: MemoryCredentials())
+        await model.newConversation(); await model.addProject(directory)
+        let chat = try XCTUnwrap(model.selectedConversation), project = try XCTUnwrap(model.selectedProject)
+        var report = TaskReport(conversationID: chat.id, projectID: project.id, projectPath: project.canonicalPath, provider: .grok, prompt: "Refresh the website", state: .completed)
+        report.snapshotPaths = ["index.html", "style.css", "motion.js", "preview.js"]
+        report.changeSummary = .init(additions: 14, deletions: 8, countedFiles: 4)
+        model.features.latestChatReport = report
+        model.features.queue = ["Add clean, modern transitions", "Review the mobile layout"].enumerated().map { index, text in
+            QueuedWork(position: index, projectID: project.id, projectPath: project.canonicalPath, provider: .grok, authentication: .account, executable: "fixture", providerConfiguration: "", modelID: "Grok", profile: ProjectProfile(id: project.id, workingDirectory: project.canonicalPath), prompt: text, context: [], followUpConversationID: chat.id)
+        }
+        model.features.queuePaused = false
+        model.timeline = [
+            .init(kind: .userMessage, title: "You", text: "Update the website and check the changes."),
+            .init(kind: .command, title: "npm run build", text: "Build completed successfully", detail: "Exit 0"),
+            .init(kind: .agentMessage, title: "Assistant", text: "The build passed. The layout and transitions are ready to review."),
+            .init(kind: .fact, title: "Code reviewer", text: "Reviewed the changed files and checked keyboard navigation.", detail: ConversationFact(key: "review", category: .activity, title: "Code reviewer", text: "Review complete", state: "completed").encoded)
+        ]
+        try FileManager.default.createDirectory(atPath: destination, withIntermediateDirectories: true)
+        for dark in [true, false] {
+            try renderView(ConversationView().environmentObject(model), name: "chat-work-" + (dark ? "dark" : "light"), dark: dark, destination: destination, size: NSSize(width: 780, height: 900))
+        }
+        try renderView(ChatWorkStatusView(features: model.features).environmentObject(model), name: "chat-work-compact", dark: true, destination: destination, size: NSSize(width: 480, height: 220))
+        await model.shutdown()
+    }
+
+    @MainActor
     func testRenderAIConnectionsAndComposerActions() async throws {
         guard let destination = ProcessInfo.processInfo.environment["NATIVEAGENT_SNAPSHOT_DIR"] else { throw XCTSkip("Set NATIVEAGENT_SNAPSHOT_DIR for UI renders.") }
         _ = NSApplication.shared

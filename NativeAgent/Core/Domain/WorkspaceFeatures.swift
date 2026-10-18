@@ -78,6 +78,8 @@ struct QueuedWork: Codable, Identifiable, Sendable {
     var state: WorkTaskState = .queued
     var conversationID: UUID?
     var failure: String?
+    // Nil preserves the original separate-chat queue behavior.
+    var followUpConversationID: UUID?
 }
 
 struct RecordedCommand: Codable, Identifiable, Sendable {
@@ -109,6 +111,16 @@ struct TaskReport: Codable, Identifiable, Sendable {
     var testCommand = ""
     var snapshotPaths: [String] = []
     var proposals: [String: Proposal]?
+    var changeSummary: TaskChangeSummary?
+    var changedPaths: [String] {
+        let root = URL(fileURLWithPath: projectPath, isDirectory: true).standardizedFileURL
+        let paths = snapshotPaths + Array(fileChanges.keys)
+        return Set(paths.map { path in
+            let absolute = URL(fileURLWithPath: path, relativeTo: root).standardizedFileURL.path
+            let prefix = root.path + "/"
+            return absolute.hasPrefix(prefix) ? String(absolute.dropFirst(prefix.count)) : absolute
+        }).sorted()
+    }
     var markdown: String {
         var result = "# Task report\n\nStatus: \(state.rawValue)\nProvider: \(provider.title)\nWorkspace: \(projectPath)\n\n## Request\n\n\(prompt)\n\n## Provider summary (not independent verification)\n\n\(summary.isEmpty ? "No summary reported." : summary)\n\n## Changes\n"
         result += fileChanges.keys.sorted().map { "- `\($0)` — provider-reported change" }.joined(separator: "\n")
@@ -208,5 +220,43 @@ enum WorkspaceCommand: String, CaseIterable, Identifiable {
         var remaining = query.lowercased().filter { !$0.isWhitespace }[...]
         for character in title.lowercased() where remaining.first == character { remaining = remaining.dropFirst(); if remaining.isEmpty { return true } }
         return remaining.isEmpty
+    }
+}
+
+/// Counts only bounded, readable before/after snapshots; never interprets prose as a diff.
+struct TaskChangeSummary: Codable, Equatable, Sendable {
+    var additions = 0
+    var deletions = 0
+    var countedFiles = 0
+    var uncountedFiles = 0
+
+    static func measure(_ files: [FileCheckpoint]) -> Self {
+        var result = Self()
+        for file in files {
+            guard let after = file.after,
+                  let old = String(data: file.before, encoding: .utf8),
+                  let new = String(data: after, encoding: .utf8) else {
+                result.uncountedFiles += 1; continue
+            }
+            func lines(_ text: String) -> [Substring] {
+                guard !text.isEmpty else { return [] }
+                var value = text.split(separator: "\n", omittingEmptySubsequences: false)
+                if text.hasSuffix("\n") { value.removeLast() }
+                return value
+            }
+            let beforeLines = lines(old), afterLines = lines(new)
+            // Bound worst-case diff work; large files still appear in Review.
+            guard beforeLines.count + afterLines.count <= 4_000 else {
+                result.uncountedFiles += 1; continue
+            }
+            for change in afterLines.difference(from: beforeLines) {
+                switch change {
+                case .insert: result.additions += 1
+                case .remove: result.deletions += 1
+                }
+            }
+            result.countedFiles += 1
+        }
+        return result
     }
 }

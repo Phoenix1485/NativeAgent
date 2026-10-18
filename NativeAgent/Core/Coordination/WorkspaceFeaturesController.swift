@@ -36,6 +36,8 @@ final class WorkspaceFeaturesController: ObservableObject {
     @Published var selectedLines: ClosedRange<Int>?
     @Published var session = SessionState()
     @Published var notice: String?
+    @Published var latestChatReport: TaskReport?
+    @Published private(set) var enqueueing = false
     @Published var activeTask: TaskReport?
     private var baseline: TaskCheckpoint?
     private var launchingQueue = false
@@ -130,12 +132,15 @@ final class WorkspaceFeaturesController: ObservableObject {
         let token = UUID(); selectionToken = token
         guard let model else { return }
         let chat = model.selectedConversation, project = model.selectedProject
+        latestChatReport = nil
         context = []; contextOwner = chat?.id; branches = []; selectedCode = ""; selectedLines = nil
         do {
             let loaded: [ContextAttachment] = try await chat.mapAsync { try await database.feature([ContextAttachment].self, kind: "context", id: $0.id.uuidString) ?? [] } ?? []
             let found = try await project.mapAsync { try await database.feature(ProjectProfile.self, kind: "profile", id: $0.id.uuidString) }
             let links = try await chat.mapAsync { try await database.branchLinks(for: $0.id) } ?? []
+            let latest = try await chat.mapAsync { try await database.latestTaskReport(conversationID: $0.id) }
             guard token == selectionToken else { return }
+            latestChatReport = latest ?? nil
             context = loaded; profile = found ?? nil; branches = links
             if runProfile?.id != project?.id { runProfile = nil }
             await validateContext()
@@ -363,9 +368,11 @@ final class WorkspaceFeaturesController: ObservableObject {
         if let baseline {
             let observed = await fileService.finish(baseline, root: report.projectPath)
             report.snapshotPaths = observed.files.map(\.path)
+            report.changeSummary = await fileService.summarize(observed)
             try? await database.saveFeature(observed, kind: "checkpoint", id: report.id.uuidString, projectID: report.projectID, conversationID: report.conversationID)
         }
         do { try await persistReport(report) } catch { fail(error); queuePaused = true }
+        if model?.selectedConversation?.id == report.conversationID { latestChatReport = report }
         await updateQueueState(state)
         if state != .completed { queuePaused = true }
         activeTask = nil; baseline = nil; pendingQueueID = nil; pendingQuestionText = [:]; streamedSummary = ""
@@ -385,6 +392,9 @@ final class WorkspaceFeaturesController: ObservableObject {
     }
     func openReport(_ id: UUID) async {
         do {
+            if let activeTask, activeTask.id == id {
+                selectedReport = activeTask; checkpoints = []; panel = .reports; return
+            }
             selectedReport = try await database.feature(TaskReport.self, kind: "report", id: id.uuidString)
             checkpoints = try await database.feature(TaskCheckpoint.self, kind: "checkpoint", id: id.uuidString)?.files ?? []
             panel = .reports
@@ -410,32 +420,71 @@ final class WorkspaceFeaturesController: ObservableObject {
         } catch { fail(error) }
     }
 
-    func enqueueDraft() async {
+    var canQueueFollowUp: Bool {
+        guard let model else { return false }
+        return !enqueueing && !launchingQueue && (!model.isWorking || activeTask != nil) && !model.usesRecipientChat && model.selectedConversation != nil &&
+            model.selectedProject != nil && model.selectedModelID != nil &&
+            model.providerCapabilities.structuredStreaming && model.settings.provider != .claude &&
+            !model.historyLoading && !model.features.editorHasChanges && !model.features.importingFiles &&
+            !model.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && queue.count < 200
+    }
+
+    func enqueueFollowUp() async {
+        guard canQueueFollowUp else { return }
+        await enqueueDraft(followUp: true)
+    }
+
+    func prioritizeQueue(_ item: QueuedWork) async {
+        guard var value = queue.first(where: { $0.id == item.id }), value.state == .queued,
+              pendingQueueID != value.id else { return }
+        value.position = (queue.map(\.position).min() ?? 0) - 1
+        if let index = queue.firstIndex(where: { $0.id == value.id }) { queue[index].position = value.position }
+        do { try await persistQueue(value) } catch { pauseQueue(); fail(error) }
+    }
+
+    func enqueueDraft(followUp: Bool = false) async {
+        guard !enqueueing, !launchingQueue else { return }
+        enqueueing = true; defer { enqueueing = false }
+
         guard let model, let project = model.selectedProject, let chosen = model.selectedModelID, !model.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, let profile = runProfile ?? profile ?? defaultProfile() else { notice = "Choose a project/model and prepare a prompt first."; return }
-        guard model.providerCapabilities.structuredStreaming, model.settings.provider != .claude, queue.count < 200 else { notice = "Queue execution requires a verified native integration and is limited to 200 tasks."; return }
+        guard !model.usesRecipientChat, model.providerCapabilities.structuredStreaming, model.settings.provider != .claude, queue.count < 200 else { notice = "Queue execution requires a verified native integration and is limited to 200 tasks."; return }
         let provider = model.settings.profile(model.settings.provider)
         var captured = profile
         captured.provider = model.settings.provider; captured.modelID = chosen
         captured.reasoning = model.settings.effectiveReasoning(for: model.selectedProviderModel, provider: model.settings.provider)
         captured.instructions = model.settings.instructions; captured.access = model.settings.access
-        let value = QueuedWork(position: (queue.map(\.position).max() ?? 0) + 1, projectID: project.id, projectPath: project.canonicalPath, provider: model.settings.provider, authentication: provider.method, executable: provider.binaryPath, providerConfiguration: ProviderExecutable.profileDescription(model.settings.provider), modelID: chosen, profile: captured, prompt: model.draft, context: context)
-        do { try await persistQueue(value); queue.append(value); panel = .queue } catch { fail(error) }
+        let capturedChat = model.selectedConversation?.id
+        let hadPending = queue.contains { $0.state == .queued || $0.state == .failed || $0.state == .needsReview }
+        var value = QueuedWork(position: (queue.map(\.position).max() ?? 0) + 1, projectID: project.id, projectPath: project.canonicalPath, provider: model.settings.provider, authentication: provider.method, executable: provider.binaryPath, providerConfiguration: ProviderExecutable.profileDescription(model.settings.provider), modelID: chosen, profile: captured, prompt: model.draft, context: context)
+        if followUp { value.followUpConversationID = capturedChat }
+        do {
+            try await persistQueue(value); queue.append(value)
+            if followUp {
+                if model.selectedConversation?.id == capturedChat && model.draft == value.prompt {
+                    model.draft = ""; model.scheduleDraftSave()
+                }
+                if !hadPending { await startQueue() }
+            } else { panel = .queue }
+        } catch { fail(error) }
     }
     private func persistQueue(_ value: QueuedWork) async throws { try await database.saveFeature(value, kind: "queue", id: value.id.uuidString, title: String(value.prompt.prefix(100)), projectID: value.projectID) }
     func editQueue(_ value: QueuedWork) async {
         guard let index = queue.firstIndex(where: { $0.id == value.id }), queue[index].state == .queued else { return }
+        guard !value.prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, pendingQueueID != value.id else { return }
         queue[index].prompt = value.prompt
         do { try await persistQueue(queue[index]) } catch { fail(error) }
     }
     func moveQueue(_ value: QueuedWork, by delta: Int) async {
         var ordered = queue.sorted { $0.position < $1.position }
-        guard queuePaused, let index = ordered.firstIndex(where: { $0.id == value.id }), ordered.indices.contains(index + delta), !ordered[index].state.isActive, !ordered[index + delta].state.isActive else { return }
+        guard queuePaused, !launchingQueue, let index = ordered.firstIndex(where: { $0.id == value.id }), ordered.indices.contains(index + delta), !ordered[index].state.isActive, !ordered[index + delta].state.isActive else { return }
         ordered.swapAt(index, index + delta)
         do { for index in ordered.indices { ordered[index].position = index; try await persistQueue(ordered[index]) }; queue = ordered } catch { fail(error) }
     }
     func removeQueue(_ value: QueuedWork) async {
-        guard !value.state.isActive, pendingQueueID != value.id else { return }
-        do { try await database.removeFeature(kind: "queue", id: value.id.uuidString); queue.removeAll { $0.id == value.id } } catch { fail(error) }
+        guard let current = queue.first(where: { $0.id == value.id }), !current.state.isActive, pendingQueueID != value.id else { return }
+        queue.removeAll { $0.id == value.id }
+        do { try await database.removeFeature(kind: "queue", id: value.id.uuidString) }
+        catch { queue.append(current); pauseQueue(); fail(error) }
     }
     func pauseQueue() { queuePaused = true; queueLaunchToken = UUID() }
     func cancelQueue(_ value: QueuedWork) async {
@@ -445,7 +494,7 @@ final class WorkspaceFeaturesController: ObservableObject {
         queue[index].state = .canceled; try? await persistQueue(queue[index])
     }
     func startQueue() async {
-        guard !launchingQueue, activeTask == nil, model?.isWorking == false else { return }
+        guard !launchingQueue else { return }
         guard !queue.contains(where: { [.failed, .needsReview].contains($0.state) }) else { notice = "Review and remove failed/uncertain tasks before restarting. They are never retried automatically."; return }
         queuePaused = false; queueLaunchToken = UUID(); await runNextQueuedTask()
     }
@@ -454,11 +503,16 @@ final class WorkspaceFeaturesController: ObservableObject {
               let item = queue.filter({ $0.state == .queued }).min(by: { $0.position < $1.position }) else { return }
         let token = queueLaunchToken
         launchingQueue = true
-        defer { launchingQueue = false }
+        pendingQueueID = item.id
+        defer { launchingQueue = false; if activeTask == nil { pendingQueueID = nil } }
         do {
             guard let project = model.projects.first(where: { $0.id == item.projectID }), project.canonicalPath == item.projectPath else { throw NativeAgentError.unsupported("The queued workspace has changed or was removed.") }
             let preference = model.settings.profile(item.provider)
             guard preference.method == item.authentication, preference.binaryPath == item.executable, ProviderExecutable.profileDescription(item.provider) == item.providerConfiguration else { throw NativeAgentError.unsupported("Provider profile changed. Review this task’s captured billing and runtime settings.") }
+            if let chatID = item.followUpConversationID {
+                try await runFollowUp(item, chatID: chatID, token: token)
+                return
+            }
             await model.useProvider(item.provider)
             await model.connect()
             guard token == queueLaunchToken, !queuePaused else { return }
@@ -485,6 +539,52 @@ final class WorkspaceFeaturesController: ObservableObject {
             pendingQueueID = nil; queuePaused = true; fail(error)
         }
     }
+    private func runFollowUp(_ item: QueuedWork, chatID: UUID, token: UUID) async throws {
+        guard let model, model.selectedConversation?.id == chatID,
+              model.selectedConversation?.archivedAt == nil else {
+            pauseQueue(); notice = "Return to the queued chat and resume its queue."; return
+        }
+        guard !model.usesRecipientChat, model.settings.provider == item.provider,
+              model.selectedModelID == item.modelID,
+              model.settings.instructions == item.profile.instructions,
+              model.settings.access == item.profile.access,
+              model.settings.effectiveReasoning(for: model.selectedProviderModel, provider: item.provider) == item.profile.reasoning else {
+            throw NativeAgentError.unsupported("The queued chat’s model, instructions or permissions changed. Remove and queue the prompt again with your current settings.")
+        }
+        guard token == queueLaunchToken, !queuePaused else { return }
+        let draft = model.draft, attachments = context
+        model.draft = item.prompt; context = item.context
+        defer {
+            if model.selectedConversation?.id == chatID {
+                if model.draft.isEmpty || model.draft == item.prompt { model.draft = draft; model.scheduleDraftSave() }
+                // Restore only if the send did not add or replace context while suspended.
+                if context == item.context {
+                    context = attachments
+                    Task { [weak self] in try? await self?.saveContext() }
+                }
+            }
+        }
+        guard model.canSend else { throw NativeAgentError.unsupported("The queued chat is not ready. Check the connection and review the queue.") }
+        if let index = queue.firstIndex(where: { $0.id == item.id }) { queue[index].conversationID = chatID }
+        await updateQueueState(.running)
+        guard token == queueLaunchToken, !queuePaused else {
+            await updateQueueState(.queued); return
+        }
+        guard model.selectedConversation?.id == chatID, model.draft == item.prompt,
+              model.settings.provider == item.provider, !model.usesRecipientChat,
+              model.selectedModelID == item.modelID,
+              model.settings.instructions == item.profile.instructions,
+              model.settings.access == item.profile.access,
+              model.settings.effectiveReasoning(for: model.selectedProviderModel, provider: item.provider) == item.profile.reasoning else {
+            throw NativeAgentError.unsupported("The chat or prompt changed before execution. Review the queued follow-up.")
+        }
+        await model.send()
+        if activeTask == nil, queue.first(where: { $0.id == item.id })?.state == .running {
+            throw NativeAgentError.unsupported("The follow-up did not start. Review project trust and context.")
+        }
+        if activeTask == nil && !queuePaused { Task { [weak self] in await self?.runNextQueuedTask() } }
+    }
+
     private func updateQueueState(_ state: WorkTaskState, error: String? = nil) async {
         guard let id = pendingQueueID ?? activeTask?.queueID, let index = queue.firstIndex(where: { $0.id == id }) else { return }
         queue[index].state = state; queue[index].failure = error

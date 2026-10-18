@@ -102,6 +102,134 @@ final class WorkspaceFeaturesTests: XCTestCase {
         XCTAssertEqual(links.first?.id, branch.id)
     }
 
+    func testFollowUpsStayInChatPreserveDraftAndRunSerially() async throws {
+        await provider.setCompleteImmediately(false)
+        let chatID = try XCTUnwrap(model.selectedConversation?.id)
+        model.draft = "Start working"; await model.send()
+        try await wait { self.model.features.activeTask != nil }
+        model.draft = "Follow up"; await model.features.enqueueFollowUp()
+        XCTAssertEqual(model.draft, "")
+        XCTAssertNil(model.features.panel)
+        XCTAssertEqual(model.features.queue.first?.followUpConversationID, chatID)
+        model.draft = "Unsent next idea"
+        await provider.emit(.turnCompleted(turnID: nil, status: .completed, error: nil))
+        try await wait { await self.provider.sentPrompts.count == 2 && self.model.draft == "Unsent next idea" }
+        let threads = await provider.sentThreads
+        XCTAssertEqual(Set(threads).count, 1)
+        XCTAssertEqual(model.selectedConversation?.id, chatID)
+        XCTAssertEqual(model.draft, "Unsent next idea")
+        await provider.emit(.turnCompleted(turnID: nil, status: .completed, error: nil))
+        try await wait { self.model.features.activeTask == nil && !self.model.features.finishingTask }
+        XCTAssertEqual(model.features.queue.first?.state, .completed)
+        let saved = try await database.latestTaskReport(conversationID: chatID)
+        XCTAssertEqual(saved?.prompt, "Follow up")
+    }
+
+    func testFollowUpPauseEditPriorityRemoveAndFailure() async throws {
+        await provider.setCompleteImmediately(false)
+        model.draft = "Start"; await model.send()
+        model.draft = "First queued"; await model.features.enqueueFollowUp()
+        model.draft = "Second queued"; await model.features.enqueueFollowUp()
+        model.features.pauseQueue()
+        var item = try XCTUnwrap(model.features.queue.last)
+        item.prompt = "Edited next"; await model.features.editQueue(item)
+        await model.features.prioritizeQueue(item)
+        XCTAssertEqual(model.features.queue.min(by: { $0.position < $1.position })?.prompt, "Edited next")
+        let first = try XCTUnwrap(model.features.queue.first)
+        await model.features.removeQueue(first)
+        await provider.emit(.turnCompleted(turnID: nil, status: .completed, error: nil))
+        try await wait { self.model.features.activeTask == nil && !self.model.features.finishingTask }
+        let count = await provider.sentPrompts.count
+        XCTAssertEqual(count, 1)
+        await model.features.startQueue()
+        try await wait { await self.provider.sentPrompts.count == 2 }
+        // A stale queued value must not remove a task that is now running.
+        await model.features.removeQueue(item)
+        XCTAssertEqual(model.features.queue.count, 1)
+        await provider.emit(.turnCompleted(turnID: nil, status: .failed, error: "Fixture failure"))
+        try await wait { self.model.features.activeTask == nil && !self.model.features.finishingTask }
+        XCTAssertTrue(model.features.queuePaused)
+        XCTAssertEqual(model.features.queue.first?.state, .failed)
+    }
+
+    func testFollowUpDoesNotSwitchChatsOrOverwriteOtherDraft() async throws {
+        await provider.setCompleteImmediately(false)
+        let original = try XCTUnwrap(model.selectedConversation)
+        model.draft = "Start"; await model.send()
+        model.draft = "Queued"; await model.features.enqueueFollowUp()
+        let other = Conversation(projectID: original.projectID, title: "Other chat")
+        try await database.save(conversation: other)
+        model.conversations.append(other); await model.select(other)
+        model.draft = "Keep this draft"
+        await provider.emit(.turnCompleted(turnID: nil, status: .completed, error: nil))
+        try await wait { self.model.features.queuePaused && self.model.features.activeTask == nil }
+        XCTAssertEqual(model.selectedConversation?.id, other.id)
+        XCTAssertEqual(model.draft, "Keep this draft")
+        XCTAssertEqual(model.features.queue.first?.state, .queued)
+        await model.select(original); await model.features.startQueue()
+        try await wait { await self.provider.sentPrompts.count == 2 }
+        await provider.emit(.turnCompleted(turnID: nil, status: .completed, error: nil))
+        try await wait { self.model.features.activeTask == nil && !self.model.features.finishingTask }
+    }
+
+    func testFollowUpRejectsChangedPermissionsAndRetainsPrompt() async throws {
+        await provider.setCompleteImmediately(false)
+        model.draft = "Start"; await model.send()
+        model.draft = "Review this"; await model.features.enqueueFollowUp()
+        model.settings.instructions = "Changed after queueing"
+        await provider.emit(.turnCompleted(turnID: nil, status: .completed, error: nil))
+        try await wait { self.model.features.queue.first?.state == .failed }
+        let count = await provider.sentPrompts.count
+        XCTAssertEqual(count, 1)
+        XCTAssertEqual(model.features.queue.first?.prompt, "Review this")
+        XCTAssertTrue(model.features.queuePaused)
+    }
+
+    func testObservedChangesHavePersistedCountsAndConversationScope() async throws {
+        let file = root.appendingPathComponent("example.txt")
+        try Data("one\ntwo\nthree\n".utf8).write(to: file)
+        await provider.setCompleteImmediately(false)
+        let chat = try XCTUnwrap(model.selectedConversation)
+        model.draft = "Make a change"; await model.send()
+        try Data("one\nchanged\nthree\nadded\n".utf8).write(to: file)
+        await provider.emit(.turnCompleted(turnID: nil, status: .completed, error: nil))
+        try await wait { self.model.features.activeTask == nil && !self.model.features.finishingTask }
+        let report = try XCTUnwrap(model.features.latestChatReport)
+        XCTAssertEqual(report.changedPaths, ["example.txt"])
+        XCTAssertEqual(report.changeSummary?.additions, 2)
+        XCTAssertEqual(report.changeSummary?.deletions, 1)
+        await model.features.openReport(report.id)
+        XCTAssertEqual(model.features.checkpoints.count, 1)
+        let saved = try await database.latestTaskReport(conversationID: chat.id)
+        XCTAssertEqual(saved?.changeSummary, report.changeSummary)
+        let other = Conversation(projectID: chat.projectID, title: "Other")
+        try await database.save(conversation: other); await model.select(other)
+        XCTAssertNil(model.features.latestChatReport)
+        await model.select(chat)
+        XCTAssertEqual(model.features.latestChatReport?.id, report.id)
+    }
+
+    func testReportedAbsoluteAndObservedRelativePathsCountOnce() {
+        var report = TaskReport(conversationID: UUID(), projectID: UUID(), projectPath: "/project", provider: .grok, prompt: "Change files")
+        report.snapshotPaths = ["src/file.swift"]
+        report.fileChanges = ["/project/src/file.swift": "Changed", "./src/file.swift": "Changed", "/external/file.swift": "Changed"]
+        report.proposals = ["pending": .init(path: "not-applied.swift", diff: "+proposal", state: "proposed")]
+        XCTAssertEqual(report.changedPaths, ["/external/file.swift", "src/file.swift"])
+    }
+
+    func testLineCountsHandleEmptyFilesAndOmitUnreadableOrLargeSnapshots() throws {
+        let files: [FileCheckpoint] = [
+            .init(path: "empty", before: Data(), after: Data("new\n".utf8), beforeHash: ""),
+            .init(path: "blank-lines", before: Data("a\n\nb\n".utf8), after: Data("a\nb\n".utf8), beforeHash: ""),
+            .init(path: "unreadable", before: Data("old".utf8), beforeHash: ""),
+            .init(path: "large", before: Data(String(repeating: "line\n", count: 4_001).utf8), after: Data(), beforeHash: "")
+        ]
+        XCTAssertEqual(TaskChangeSummary.measure(files), .init(additions: 1, deletions: 1, countedFiles: 2, uncountedFiles: 2))
+        let legacy = QueuedWork(position: 0, projectID: UUID(), projectPath: "/tmp", provider: .grok, authentication: .account, executable: "fixture", providerConfiguration: "", modelID: "test", profile: ProjectProfile(id: UUID(), workingDirectory: "/tmp"), prompt: "Legacy", context: [])
+        let decoded = try JSONDecoder().decode(QueuedWork.self, from: JSONEncoder().encode(legacy))
+        XCTAssertNil(decoded.followUpConversationID)
+    }
+
     func testQueueRequiresExplicitStartAndSerializesThroughApprovalAndCompletion() async throws {
         await provider.setCompleteImmediately(false)
         model.draft = "First"; await model.features.enqueueDraft()

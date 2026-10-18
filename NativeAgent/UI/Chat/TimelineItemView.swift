@@ -9,7 +9,34 @@ struct TimelineItemView: View {
     @State private var editingPrompt = false
     private var displayText: String { fullText ?? String(item.text.prefix(8_000)) }
 
+    private var isActivity: Bool {
+        if item.kind == .command || item.kind == .fileChange { return true }
+        guard item.kind == .fact, let fact = ConversationFact.decode(item.detail) else { return false }
+        return [.activity, .plan, .status, .result].contains(fact.category)
+    }
+    private var activityRunning: Bool {
+        guard model.conversationIsActive else { return false }
+        return item.isStreaming || ["running", "inProgress"].contains(ConversationFact.decode(item.detail)?.state ?? "")
+    }
     var body: some View {
+        if isActivity {
+            DisclosureGroup {
+                detailedBody
+            } label: {
+                HStack(spacing: 9) {
+                    Image(systemName: item.kind == .command ? "terminal" : item.kind == .fileChange ? "doc.badge.ellipsis" : "sparkles")
+                    if activityRunning { ProgressView().controlSize(.mini) }
+                    Text(item.kind == .command ? "\(item.detail == nil ? "Command" : "Ran command") · \(item.title)" : item.title).lineLimit(1)
+                    Spacer(minLength: 0)
+                    if let state = ConversationFact.decode(item.detail)?.state, state != "running" {
+                        Text(state).font(.system(size: 10)).lineLimit(1)
+                    }
+                }.font(.system(size: 12)).foregroundStyle(.secondary).help(item.title)
+            }.padding(.horizontal, 6).accessibilityElement(children: .contain)
+        } else { detailedBody }
+    }
+
+    private var detailedBody: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
                 Image(systemName: icon).font(.system(size: 12)).foregroundStyle(color).frame(width: 26, height: 26).background(color.opacity(0.1), in: RoundedRectangle(cornerRadius: 7))
